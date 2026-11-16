@@ -1,0 +1,24 @@
+#!/bin/bash
+# ot-g16sub: OT-LCDFT-RCCS の最適化を1本のジョブとしてRCCSに投入するコマンド
+#
+#   ot-g16sub config.yaml                  # 投入
+#   ot-g16sub config.yaml --prepare-only   # ジョブスクリプトを作るだけ（投入しない）
+#
+# conda環境（既定: otlcdft）を自動で有効にしてから param_opt_RCCS.py --submit を実行する。
+# 環境名を変える場合は OTLCDFT_ENV を設定する（例: export OTLCDFT_ENV=myenv）。
+
+CONDA_INIT=${OTLCDFT_CONDA_INIT:-/apl/conda/20250310/conda_init.sh}
+ENV_NAME=${OTLCDFT_ENV:-otlcdft}
+SCRIPT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/param_opt_RCCS.py"
+
+if [ $# -lt 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "usage: ot-g16sub CONFIG.yaml [--prepare-only]"
+    exit 1
+fi
+
+. "$CONDA_INIT" || { echo "エラー: $CONDA_INIT を読み込めません"; exit 1; }
+conda activate "$ENV_NAME" || { echo "エラー: conda環境 '$ENV_NAME' がありません（install.sh を実行してください）"; exit 1; }
+
+CONFIG="$1"
+shift
+exec python3 -u "$SCRIPT" --config "$CONFIG" --submit "$@"

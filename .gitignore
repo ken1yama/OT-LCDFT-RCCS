@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Gaussian / g16sub outputs generated during optimization
+*_q0_*.gjf
+*_q1_*.gjf
+*_qm1_*.gjf
+*.gjf.ap
+*.out
+*.out.old
+*.log
+*.chk
+*.fchk
+H-*.sh
+*.o[0-9]*
+*.e[0-9]*
+
+# Optimization results
+*_optimization_results.txt
+*_optimization.png
+omega_optimization_config.yaml

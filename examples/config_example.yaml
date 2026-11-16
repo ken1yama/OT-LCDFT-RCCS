@@ -1,0 +1,147 @@
+# =====================================================================
+# param_opt_RCCS.py 設定ファイルの例
+#
+# 実行方法（gjfファイルのあるフォルダで実行）:
+#   ot-g16sub config_example.yaml
+#     → 最適化全体を1本のジョブとして投入（推奨。フロントエンドで待機しない）
+#       python3 /path/to/param_opt_RCCS.py --config config_example.yaml --submit と同じ
+#   python3 /path/to/param_opt_RCCS.py --config config_example.yaml
+#     → フロントエンドで実行し、1点ごとに g16sub で投入
+#
+# 下の有効な設定は「ωのみをBrent法で最適化、α・βは汎関数のデフォルト」の例。
+# 他のモードの例はファイル末尾にあります。
+# =====================================================================
+
+molecule:
+  # 基準となるgjfファイル（実行するフォルダに置く）
+  # 汎関数/基底関数、%mem、電荷・多重度、座標、その他のキーワードはここから読み込む。
+  # gjf中の IOp(3/107,3/108)（ω）や IOp(3/130,3/131)（α）は固定値として使われる（yamlの指定が優先）。
+  gjf_file: benzene.gjf
+
+calculation:
+  # 1状態（q0/q1/qm1 の1計算）あたりのコア数
+  nproc_per_job: 16
+
+  # ---- --submit（最適化全体を1本のジョブとして投入）のとき ----
+  # ジョブのコア数は nproc_per_job × 同時に走らせる状態数（max_parallel_jobs、最大3）
+  # 例: 16 × 3 = 48コア。jobtype=core の上限は63コア
+  # 最適化全体のwalltime（Hキューの上限は72時間）。足りなければ use_existing_outputs で再開
+  job_walltime: '72:00:00'
+  # gjfに%memがない場合の、1コアあたりのメモリ（MB）。16コアなら %mem=16000MB
+  mem_per_core_mb: 1000
+  # g16sub に追加で渡すオプション（例: ['-q', 'H']）
+  g16sub_options: []
+
+  # ---- --submit なし（1点ごとに g16sub で投入）のとき ----
+  # 1計算のwalltime（'H:MM:SS'）。完了監視のタイムアウトは
+  # ジョブ開始（.out出現）から walltime + 10分。キュー待ちの時間は含まない。
+  walltime: '2:00:00'
+
+optimization:
+  # ---- 最適化モードとアルゴリズム ----
+  # omega_only : ωを最適化（αは固定）
+  # alpha_only : αを最適化（ωは固定）
+  # omega_alpha: ωとαを同時に最適化
+  optimization_mode: omega_only
+
+  # brent          : 1次元専用。J値曲線が単峰なので最も効率的（推奨）
+  # golden_section : 1次元専用。黄金分割探索
+  # grid           : 等間隔グリッド（omega_alphaでは √n_calls × √n_calls 点）
+  # adaptive_grid  : 1次元専用。粗い探索 → 最良点の周辺を細かく探索
+  # bayesian       : ベイズ最適化（omega_alphaではこれかgrid）
+  # ※ 省略時は omega_only / alpha_only なら brent、omega_alpha なら bayesian
+  optimization_algorithm: brent
+
+  # ---- ωの探索範囲 ----（omega_only / omega_alpha で使用）
+  omega_min: 0.12
+  omega_max: 0.22
+
+  # ω・α・βの小数点以下の桁数（2〜4）。ファイル名の桁数もこれに従う。
+  # Brent法の収束判定は 10^-(桁数+1)
+  omega_digits: 4
+
+  # ---- 固定パラメータ ----
+  # 優先順位: yamlの値 > gjfのIOp > Gaussianの汎関数デフォルト（IOp指定なし）
+  fixed_alpha: null     # omega_only で使うα
+  fixed_omega: null     # alpha_only で使うω
+
+  # ---- αの探索範囲 ----（alpha_only / omega_alpha で使用）
+  alpha_min: 0.0
+  alpha_max: 0.5        # beta_constraint: solvent のときは 1/ε を超えないよう自動で制限
+
+  # ---- βの扱い ----
+  # βのIOpは、αをIOpで指定するとき（fixed_alphaあり、またはαを最適化）のみ書き込まれる。
+  # αが汎関数デフォルトのままなら、βも指定しない。
+  # default   : βのIOp指定なし（汎関数のデフォルトを使用）
+  # constraint: α + β = C を保つ（β = C − α）
+  # fixed     : βを fixed_beta に固定
+  beta_mode: default
+  beta_constraint: null # constraint のとき: 数値 C（0 < C ≤ 1）、または solvent（C = 1/ε）
+  fixed_beta: null      # fixed のときのβ
+  epsilon: 1.0          # 比誘電率。beta_constraint: solvent のときのみ使用
+
+  # ---- 評価回数と終了条件 ----
+  # brent / golden_section: 最大反復回数、grid: 点数、bayesian: 新規の評価回数
+  n_calls: 15
+  # J値（eV²）がこの値以下になったら終了。null なら使わない
+  j_threshold: null
+
+  # ---- ベイズ最適化のみで使用 ----
+  n_initial_points: 8        # 初期点数（1次元では8未満なら8に、2次元は15以上推奨）
+  bayesian_acq_func: gp_hedge  # gp_hedge / EI / PI / LCB
+
+  # ---- 3状態の同時実行 ----
+  # 1: q0, q1, qm1 を順番に計算 / 2以上: 同時に計算（最大3）
+  max_parallel_jobs: 3
+
+  # 2回目以降の試行で、各状態の前回のchkを %oldchk + Guess=Read で読み込む
+  use_guess_read: true
+
+  # 終了時に最適点のchk（q0/q1/qm1の3つ）だけを残し、他のchkを削除する
+  # 計算中も、次のGuess=Readに使うchkと現時点の最良点のchk以外は削除する
+  cleanup_chk: false
+
+  # ---- 既存結果の利用 ----（2つは同時に指定できない）
+  # true: 同じフォルダの既存の.outを読み込み、中断した最適化を再開する（計算済みの点は再計算しない）
+  #       固定パラメータやβの設定が現在と異なる結果は読み込まない
+  use_existing_outputs: false
+  # 以前の *_optimization_results.txt を読み込む（ベイズ最適化の初期データとしてのみ使用）
+  previous_results_file: null
+
+
+# =====================================================================
+# 他の設定例（optimization: の該当する行を書き換える）
+# =====================================================================
+#
+# ■ α固定でωを最適化し、α + β = 1 を保つ
+#   optimization_mode: omega_only
+#   optimization_algorithm: brent
+#   fixed_alpha: 0.2
+#   beta_mode: constraint
+#   beta_constraint: 1.0
+#
+# ■ α固定でωを最適化し、α + β = 1/ε（溶媒の誘電率で遮蔽）を保つ
+#   optimization_mode: omega_only
+#   optimization_algorithm: brent
+#   fixed_alpha: 0.2
+#   beta_mode: constraint
+#   beta_constraint: solvent
+#   epsilon: 4.0
+#
+# ■ ω固定でαを最適化
+#   optimization_mode: alpha_only
+#   optimization_algorithm: brent
+#   fixed_omega: 0.17
+#   alpha_min: 0.0
+#   alpha_max: 0.5
+#
+# ■ ωとαを同時に最適化（ベイズ最適化）
+#   optimization_mode: omega_alpha
+#   optimization_algorithm: bayesian
+#   alpha_min: 0.0
+#   alpha_max: 0.5
+#   n_calls: 30
+#   n_initial_points: 15
+#
+# ■ 中断した最適化を再開（同じフォルダで、同じ設定のまま）
+#   use_existing_outputs: true
