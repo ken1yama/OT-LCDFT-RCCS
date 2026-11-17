@@ -194,7 +194,7 @@ python3 param_opt_RCCS.py --help
 基準となる gjf ファイルには、**中性分子**の電荷・多重度と座標を書きます。
 
 ```
-#P wB97XD/def2SVP
+#P LC-BLYP/def2SVP
 
 benzene
 
