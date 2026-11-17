@@ -179,7 +179,7 @@ def default_config():
             'previous_results_file': None,
             'use_existing_outputs': False,
             'use_guess_read': True,
-            'cleanup_chk': False
+            'keep_files': 'all'
         }
     }
 
@@ -1035,7 +1035,15 @@ class OmegaOptimizer:
                 print(f"ジョブ内実行: GAUSS_CDEF={cdef} を分割できないため %nprocshared={nproc} を使います")
         
         # chkファイルの自動削除（最適ωのchkは保持）
-        self.cleanup_chk = bool(self._get_opt_config('cleanup_chk', False))
+        # 計算ファイル（gjf/out/chk）の扱い: all（全部残す）/ optimal（最適点のout・chkだけ残す）/ none（全部消す）
+        self.keep_files = self._get_opt_config('keep_files')
+        if self.keep_files is None:
+            # 旧オプション cleanup_chk: true は optimal として扱う
+            self.keep_files = 'optimal' if self._get_opt_config('cleanup_chk', False) else 'all'
+        self.keep_files = str(self.keep_files).lower()
+        if self.keep_files not in ('all', 'optimal', 'none'):
+            raise ValueError("keep_files must be one of 'all', 'optimal', 'none'")
+        self.cleanup_chk = self.keep_files != 'all'  # 計算中に不要になったchkを削除するか
         self.created_chk = set()  # この実行で作成したchkのジョブ名
         
         # シグナルハンドラーの設定
@@ -1438,21 +1446,17 @@ class OmegaOptimizer:
             if os.path.exists(f"{name}.chk"):
                 self.optimization_state['previous_chk'][state] = name
     
-    def _cleanup_chk(self, keep_only_optimal=None):
-        """この実行で作成したchkのうち不要なものを削除
+    def _cleanup_chk(self):
+        """計算中に、この実行で作成したchkのうち不要になったものを削除（keep_files: optimal / none）
         
-        途中: 各状態の最新chk（次のGuess=Read用）と現時点の最良点のchkを保持
-        最終: keep_only_optimal=(ω, α) の最適点のchkのみ保持
+        各状態の最新chk（次のGuess=Read用）と現時点の最良点のchkは保持する
         """
         if not self.cleanup_chk:
             return 0
         
-        if keep_only_optimal is not None:
-            keep = set(self._job_names(*keep_only_optimal).values())
-        else:
-            keep = set(self.optimization_state['previous_chk'].values())
-            if self.best_j < float('inf'):
-                keep |= set(self._job_names(self.best_omega, self.best_alpha).values())
+        keep = set(self.optimization_state['previous_chk'].values())
+        if self.best_j < float('inf'):
+            keep |= set(self._job_names(self.best_omega, self.best_alpha).values())
         
         deleted = 0
         for name in sorted(self.created_chk - keep):
@@ -1466,6 +1470,47 @@ class OmegaOptimizer:
                 continue
             self.created_chk.discard(name)
         return deleted
+    
+    def _cleanup_files(self, optimal_omega, optimal_alpha):
+        """最適化の完了後に計算ファイルを整理する（keep_files に従う）
+        
+        対象は、この最適化で評価・再利用したすべての点（再開時に読み込んだ点を含む）の
+        .gjf / .gjf.ap / .out / .out.old / .chk。結果ファイル・グラフ・ログは残す。
+        中断時（Ctrl+C、walltime超過）はここを通らないので、再開に必要なファイルは消えない。
+        """
+        if self.keep_files == 'all':
+            return
+        
+        keep = set()
+        if self.keep_files == 'optimal':
+            # 報告した最適点が評価済みでなければ、評価済みの最良点を残す
+            key = self._cache_key(optimal_omega, optimal_alpha)
+            if key not in self.evaluated_cache and self.best_j < float('inf'):
+                key = self._cache_key(self.best_omega, self.best_alpha)
+            keep = set(self._job_names(*key).values())
+        
+        names = set()
+        for omega, alpha in self.evaluated_cache:
+            names |= set(self._job_names(omega, alpha).values())
+        
+        deleted = 0
+        for name in sorted(names):
+            extensions = ['.gjf', '.gjf.ap', '.out.old']
+            if name not in keep:
+                extensions += ['.out', '.chk']
+            for ext in extensions:
+                try:
+                    os.remove(f"{name}{ext}")
+                    deleted += 1
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    print(f"    削除できませんでした: {name}{ext} ({e})")
+        
+        if self.keep_files == 'optimal':
+            print(f"計算ファイルを{deleted}個削除しました（最適点の .out と .chk は保持）")
+        else:
+            print(f"計算ファイルを{deleted}個削除しました（結果ファイルとグラフは保持）")
     
     def _get_1d_param_settings(self):
         """1次元最適化用のパラメータ設定を取得
@@ -1525,10 +1570,8 @@ class OmegaOptimizer:
         self.save_results(optimal_omega, optimal_j, optimal_alpha)
         self.plot_results(optimal_omega, optimal_j, optimal_alpha)
         
-        # 最適点以外のchkを削除（cleanup_chk有効時のみ）
-        deleted = self._cleanup_chk(keep_only_optimal=(optimal_omega, optimal_alpha))
-        if deleted:
-            print(f"chkファイルを{deleted}個削除しました（最適点のchkは保持）")
+        # 計算ファイルの整理（keep_files: optimal / none のとき）
+        self._cleanup_files(optimal_omega, optimal_alpha)
         
         print(f"\n{'='*60}")
         print(f"{method_name}完了")
@@ -1630,7 +1673,9 @@ class OmegaOptimizer:
                 print("Gaussianの実行: このジョブ内でg16を直接実行")
             else:
                 print(f"Gaussianの実行: 1点ごとにg16subで投入（walltime: {seconds_to_walltime(walltime_to_seconds(self.walltime))}）")
-            print(f"chk自動削除: {'有効（最適点のchkは保持）' if self.cleanup_chk else '無効'}")
+            keep_label = {'all': '全部残す', 'optimal': '最適点の .out と .chk だけ残す',
+                          'none': '全部消す（結果ファイルとグラフは残す）'}[self.keep_files]
+            print(f"計算ファイル（完了後）: {keep_label}")
             
             print("="*60)
             print()

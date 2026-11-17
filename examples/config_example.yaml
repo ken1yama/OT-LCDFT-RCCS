@@ -99,9 +99,13 @@ optimization:
   # 2回目以降の試行で、各状態の前回のchkを %oldchk + Guess=Read で読み込む
   use_guess_read: true
 
-  # 終了時に最適点のchk（q0/q1/qm1の3つ）だけを残し、他のchkを削除する
-  # 計算中も、次のGuess=Readに使うchkと現時点の最良点のchk以外は削除する
-  cleanup_chk: false
+  # ---- 計算ファイル（各点の .gjf / .out / .chk）の扱い ----
+  # all    : 全部残す
+  # optimal: 最適点（q0/q1/qm1）の .out と .chk だけ残す
+  # none   : 全部消す（結果ファイル *_optimization_results.txt とグラフは残る）
+  # optimal / none では計算中も不要になったchkを削除する。
+  # 整理は最適化が完了したときだけ行うので、中断した場合は再開用のファイルが残る。
+  keep_files: all
 
   # ---- 既存結果の利用 ----（2つは同時に指定できない）
   # true: 同じフォルダの既存の.outを読み込み、中断した最適化を再開する（計算済みの点は再計算しない）

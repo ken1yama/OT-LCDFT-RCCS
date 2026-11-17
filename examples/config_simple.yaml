@@ -30,5 +30,8 @@ optimization:
   fixed_beta: null             # fixed のときのβ
   epsilon: 1.0                 # beta_constraint: solvent のときの比誘電率
 
+  # 完了後の計算ファイル: all（全部残す）/ optimal（最適点の out・chk だけ）/ none（全部消す）
+  keep_files: all
+
   # 中断したジョブを続きから再開するときは true にして再投入
   use_existing_outputs: false

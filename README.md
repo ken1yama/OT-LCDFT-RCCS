@@ -30,7 +30,7 @@ EA の条件には、中性分子の LUMO ではなくアニオンの HOMO を�
 - **1 本のジョブで最適化全体を実行**（`--submit`）：フロントエンドで待機せず、キュー待ちも最初の 1 回だけ
 - **3 状態の同時計算**：q0 / q1 / qm1 を、CPU を分けて同時に計算
 - **中断からの再開**：計算済みの点は再計算せずに最適化を続ける
-- **chk の自動削除**（任意）：最適点の chk だけを残す
+- **計算ファイルの整理**（任意）：完了後に、全部残す／最適点の .out・.chk だけ残す／全部消す、を選べる
 
 ## 動作環境
 
@@ -76,6 +76,19 @@ conda create -n otlcdft python scikit-optimize matplotlib
 ```
 
 環境名を `otlcdft` 以外にした場合は、`~/.bashrc` に `export OTLCDFT_ENV=<環境名>` も追加してください。
+
+</details>
+
+<details>
+<summary>更新する場合</summary>
+
+```bash
+cd ~/OT-LCDFT-RCCS
+git pull
+```
+
+`install.sh` を再実行する必要は通常ありません（必要なパッケージが変わったときは、更新内容でお知らせします）。
+`examples/` の中のファイルを直接編集していると `git pull` が止まることがあるので、設定ファイルは計算用のフォルダにコピーしてから編集してください。
 
 </details>
 
@@ -222,7 +235,7 @@ C     1.396000     0.000000     0.000000
 | `optimization.max_parallel_jobs` | 3 状態を同時に計算する数（1 なら順番に、2 以上なら同時に） |
 | `optimization.use_guess_read` | 前回の chk を Guess=Read で読み込む |
 | `optimization.use_existing_outputs` | 既存の .out を読み込んで再開する |
-| `optimization.cleanup_chk` | 最適点以外の chk を削除する |
+| `optimization.keep_files` | 完了後の計算ファイル：`all`（全部残す）／`optimal`（最適点の .out・.chk だけ）／`none`（全部消す。結果ファイルとグラフは残る） |
 
 `optimization_algorithm` を省略すると、1 次元のモードでは `brent`、`omega_alpha` では `bayesian` になります。
 
