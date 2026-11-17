@@ -79,6 +79,24 @@ conda create -n otlcdft python scikit-optimize matplotlib
 
 </details>
 
+<details>
+<summary>アンインストールする場合</summary>
+
+```bash
+# 1. ~/.bashrc（csh なら ~/.cshrc）から、追加した PATH の行を削除する
+# 2. conda 環境を削除する
+. /apl/conda/20250310/conda_init.sh
+conda env remove -n otlcdft
+# 3. スクリプトを削除する
+rm -rf ~/OT-LCDFT-RCCS
+```
+
+計算用のフォルダ（gjf・out・chk・結果ファイル）は削除されません。
+
+</details>
+
+インストール中に `A newer version of conda exists` という警告が出ることがありますが、無視してかまいません（conda は RCCS が用意しているもので、利用者が更新する必要はありません）。
+
 ## 使い方
 
 **1. gjf ファイルと設定ファイルを用意する**
