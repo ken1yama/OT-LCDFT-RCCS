@@ -1,0 +1,34 @@
+# =====================================================================
+# param_opt_RCCS.py 簡易版設定ファイル（ωのみ・Brent法）
+#
+#   ot-g16sub config_simple.yaml
+#
+# 全項目の説明は config_example.yaml を参照
+# =====================================================================
+
+molecule:
+  gjf_file: benzene.gjf        # 基準となるgjf（このフォルダに置く）
+
+calculation:
+  nproc_per_job: 16            # 1状態あたりのコア数（ジョブ全体は ×3 = 48コア）
+  job_walltime: '72:00:00'     # 最適化全体のwalltime
+  mail: false                  # true: ジョブの開始・終了時にメールで通知
+
+optimization:
+  optimization_mode: omega_only
+  optimization_algorithm: brent
+  omega_min: 0.12
+  omega_max: 0.5
+  omega_digits: 4              # 小数点以下の桁数（2〜4）
+  n_calls: 15                  # 最大反復回数
+  max_parallel_jobs: 3         # q0, q1, qm1 を同時に計算
+
+  # ---- α・β（null / default なら汎関数のデフォルトのまま）----
+  fixed_alpha: null            # 例: 0.2
+  beta_mode: default           # default / constraint（α+β=C）/ fixed
+  beta_constraint: null        # constraint のとき: 数値 C、または solvent（C = 1/ε）
+  fixed_beta: null             # fixed のときのβ
+  epsilon: 1.0                 # beta_constraint: solvent のときの比誘電率
+
+  # 中断したジョブを続きから再開するときは true にして再投入
+  use_existing_outputs: false

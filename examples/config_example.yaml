@@ -31,6 +31,8 @@ calculation:
   mem_per_core_mb: 1000
   # g16sub に追加で渡すオプション（例: ['-q', 'H']）
   g16sub_options: []
+  # ジョブの開始・終了時にメールで通知する（#PBS -m abe）
+  mail: false
 
   # ---- --submit なし（1点ごとに g16sub で投入）のとき ----
   # 1計算のwalltime（'H:MM:SS'）。完了監視のタイムアウトは
@@ -54,7 +56,7 @@ optimization:
 
   # ---- ωの探索範囲 ----（omega_only / omega_alpha で使用）
   omega_min: 0.12
-  omega_max: 0.22
+  omega_max: 0.5
 
   # ω・α・βの小数点以下の桁数（2〜4）。ファイル名の桁数もこれに従う。
   # Brent法の収束判定は 10^-(桁数+1)

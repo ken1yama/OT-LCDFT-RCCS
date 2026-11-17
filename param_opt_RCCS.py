@@ -154,7 +154,8 @@ def default_config():
             'nproc_per_job': 4,
             'walltime': '2:00:00',
             'job_walltime': '72:00:00',
-            'mem_per_core_mb': 1000
+            'mem_per_core_mb': 1000,
+            'mail': False
         },
         'optimization': {
             'optimization_mode': 'omega_only',
@@ -2445,6 +2446,13 @@ def submit_optimization_job(config_file, prepare_only=False):
     if replaced != 1:
         print(f"エラー: ジョブスクリプト中の g16 の行を特定できませんでした（{replaced}行）: {job_script}")
         sys.exit(1)
+    
+    # メール通知: true なら開始・終了・中断時に通知（#PBS -m abe）、false なら通知しない
+    mail = bool(calc.get('mail', False))
+    new_lines = [l for l in new_lines if not l.strip().startswith("#PBS -m")]
+    if mail:
+        last_pbs = max(i for i, l in enumerate(new_lines) if l.strip().startswith("#PBS"))
+        new_lines.insert(last_pbs + 1, "#PBS -m abe")
     Path(job_script).write_text("\n".join(new_lines) + "\n")
     if stale.exists():
         stale.unlink()  # g16subが作った入力ファイルは使わない
@@ -2454,6 +2462,7 @@ def submit_optimization_job(config_file, prepare_only=False):
     print(f"  コア数: {ncpus}（" + (f"{nproc}コア × {slots}状態を同時に実行" if slots > 1 else "3状態を順番に実行") + "）")
     print(f"  walltime: {job_walltime}（最適化全体）")
     print(f"  ログ: {log_file}")
+    print(f"  メール通知: {'開始・終了時に送信' if mail else 'なし'}")
     
     if prepare_only:
         print("\n--prepare-only のため投入していません。内容を確認して投入する場合:")

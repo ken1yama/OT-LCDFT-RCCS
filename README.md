@@ -86,10 +86,13 @@ conda create -n otlcdft python scikit-optimize matplotlib
 計算用のフォルダに、基準となる gjf ファイルと YAML 設定ファイルを置きます。
 例は [`examples/`](examples/) にあります。
 
+- [`config_simple.yaml`](examples/config_simple.yaml)：ω のみを Brent 法で最適化する場合の簡易版（ふだんはこちら）
+- [`config_example.yaml`](examples/config_example.yaml)：全項目をコメント付きで記載した完全版
+
 ```bash
 mkdir benzene && cd benzene
 cp ~/OT-LCDFT-RCCS/examples/benzene.gjf .
-cp ~/OT-LCDFT-RCCS/examples/config_example.yaml config.yaml
+cp ~/OT-LCDFT-RCCS/examples/config_simple.yaml config.yaml
 # config.yaml を編集
 ```
 
@@ -177,7 +180,7 @@ C     1.396000     0.000000     0.000000
 
 ## 設定ファイル（YAML）
 
-全項目をコメント付きで記載した例が [`examples/config_example.yaml`](examples/config_example.yaml) です。主な項目は次のとおりです。
+全項目をコメント付きで記載した例が [`examples/config_example.yaml`](examples/config_example.yaml)、ω のみ・Brent 法の簡易版が [`examples/config_simple.yaml`](examples/config_simple.yaml) です。主な項目は次のとおりです。
 
 | 項目 | 内容 |
 |---|---|
@@ -186,6 +189,7 @@ C     1.396000     0.000000     0.000000
 | `calculation.job_walltime` | `--submit` のジョブの walltime（最適化全体、既定 `'72:00:00'`） |
 | `calculation.mem_per_core_mb` | `--submit` で gjf に `%mem` がない場合の 1 コアあたりのメモリ（既定 1000） |
 | `calculation.g16sub_options` | `--submit` で g16sub に追加で渡すオプション（例：`['-q', 'H']`） |
+| `calculation.mail` | `--submit` のジョブの開始・終了時にメールで通知する（`#PBS -m abe`、既定 `false`） |
 | `calculation.walltime` | フロントエンド実行のときの 1 計算の walltime（既定 `'2:00:00'`） |
 | `optimization.optimization_mode` | `omega_only` / `alpha_only` / `omega_alpha` |
 | `optimization.optimization_algorithm` | `brent` / `golden_section` / `grid` / `adaptive_grid` / `bayesian` |
