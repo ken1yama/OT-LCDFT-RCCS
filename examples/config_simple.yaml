@@ -11,6 +11,10 @@ molecule:
 
 calculation:
   nproc_per_job: 16            # 1状態あたりのコア数（ジョブ全体は ×3 = 48コア）
+  # nproc_per_state:           # 状態ごとに変える場合（例: 開殻のイオンを多めに、合計48コア）
+  #   q0: 12
+  #   q1: 18
+  #   qm1: 18
   job_walltime: '72:00:00'     # 最適化全体のwalltime
   mail: false                  # true: ジョブの開始・終了時にメールで通知
 

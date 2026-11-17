@@ -114,17 +114,55 @@ def parse_cpu_list(text):
     return cpus
 
 
-def split_cpu_sets(cdef, nproc, states=('q0', 'q1', 'qm1'), n_slots=3):
-    """ジョブに割り当てられたCPU（GAUSS_CDEF）を、各状態に nproc 個ずつ割り振る
+STATES = ('q0', 'q1', 'qm1')
+
+
+def state_nprocs(config):
+    """各状態（q0/q1/qm1）のコア数
+    
+    calculation.nproc_per_state で状態ごとに指定でき（例: {q0: 12, q1: 18, qm1: 18}）、
+    指定のない状態は calculation.nproc_per_job になる。
+    """
+    calc = config.get('calculation', {})
+    default = int(calc['nproc_per_job'])
+    per_state = calc.get('nproc_per_state') or {}
+    unknown = set(per_state) - set(STATES)
+    if unknown:
+        raise ValueError(f"nproc_per_state に不明な状態があります: {sorted(unknown)}（q0, q1, qm1 のみ）")
+    nprocs = {state: int(per_state.get(state, default)) for state in STATES}
+    if any(n < 1 for n in nprocs.values()):
+        raise ValueError(f"コア数は1以上にしてください: {nprocs}")
+    return nprocs
+
+
+def job_ncpus(config):
+    """--submit のジョブ全体のコア数（同時実行なら各状態の合計、順番に実行なら最大値）"""
+    nprocs = state_nprocs(config)
+    return sum(nprocs.values()) if n_parallel_slots(config) > 1 else max(nprocs.values())
+
+
+def split_cpu_sets(cdef, nprocs, parallel=True):
+    """ジョブに割り当てられたCPU（GAUSS_CDEF）を各状態に割り振る
+    
+    parallel=True : 3状態が同時に走るので、重ならないように nprocs[状態] 個ずつ順に割り当てる
+    parallel=False: 順番に走るので、各状態とも先頭から nprocs[状態] 個を使う
     
     Returns:
         dict: {状態: '%CPUに書く文字列'}。CPUが足りない場合は None
     """
     cpus = parse_cpu_list(cdef)
-    if len(cpus) < nproc * n_slots:
+    need = sum(nprocs.values()) if parallel else max(nprocs.values())
+    if len(cpus) < need:
         return None
-    slots = [format_cpu_list(cpus[i * nproc:(i + 1) * nproc]) for i in range(n_slots)]
-    return {state: slots[i % n_slots] for i, state in enumerate(states)}
+    sets, pos = {}, 0
+    for state in STATES:
+        n = nprocs[state]
+        if parallel:
+            sets[state] = format_cpu_list(cpus[pos:pos + n])
+            pos += n
+        else:
+            sets[state] = format_cpu_list(cpus[:n])
+    return sets
 
 
 def format_cpu_list(cpus):
@@ -233,33 +271,41 @@ class GaussianResultParser:
     
     @staticmethod
     def extract_homo_lumo(output_file):
-        """HOMO/LUMOエネルギーを抽出"""
+        """HOMO/LUMOエネルギーを抽出（最後に出力された軌道エネルギーを使用）
+        
+        開殻（非制限）計算では、AlphaとBetaを合わせて
+        HOMO = 最も高い被占軌道、LUMO = 最も低い空軌道 とする（IP定理の最高被占軌道）。
+        閉殻（制限）計算ではAlphaのみが出力されるので、Alphaだけの値になる。
+        """
         if not os.path.exists(output_file):
             return None, None
         
         with open(output_file, 'r') as f:
-            content = f.read()
+            lines = f.read().split('\n')
         
-        alpha_pattern = r"Alpha\s+occ\.\s+eigenvalues\s*--\s*((?:[-\d.]+\s*)+)"
-        alpha_virt_pattern = r"Alpha\s+virt\.\s+eigenvalues\s*--\s*((?:[-\d.]+\s*)+)"
+        eig = re.compile(r'\s+(Alpha|Beta)\s+(occ|virt)\.\s+eigenvalues\s*--(.*)')
         
-        homo_energy = None
-        lumo_energy = None
+        # 最後の軌道エネルギー出力ブロック（連続する eigenvalues 行）を探す
+        end = None
+        for k in range(len(lines) - 1, -1, -1):
+            if eig.match(lines[k]):
+                end = k
+                break
+        if end is None:
+            return None, None
+        start = end
+        while start > 0 and eig.match(lines[start - 1]):
+            start -= 1
         
-        alpha_matches = re.findall(alpha_pattern, content)
-        if alpha_matches:
-            last_occ_block = alpha_matches[-1]
-            occ_energies = [float(x) for x in last_occ_block.split()]
-            if occ_energies:
-                homo_energy = occ_energies[-1]
+        number = r'-?\d+\.\d+'  # 桁あふれで数値がつながっている場合にも対応
+        occ, virt = [], []
+        for line in lines[start:end + 1]:
+            m = eig.match(line)
+            values = [float(x) for x in re.findall(number, m.group(3))]
+            (occ if m.group(2) == 'occ' else virt).extend(values)
         
-        alpha_virt_matches = re.findall(alpha_virt_pattern, content)
-        if alpha_virt_matches:
-            first_virt_block = alpha_virt_matches[0]
-            virt_energies = [float(x) for x in first_virt_block.split()]
-            if virt_energies:
-                lumo_energy = virt_energies[0]
-        
+        homo_energy = max(occ) if occ else None
+        lumo_energy = min(virt) if virt else None
         return homo_energy, lumo_energy
     
     @staticmethod
@@ -376,7 +422,7 @@ class DeltaSCFCalculator:
     def __init__(self, gjf_file, nproc=4, omega=None, omega_digits=3, alpha=None, 
                  epsilon=1.0, beta_mode='default', beta_constraint=None, fixed_beta=None,
                  optimization_state=None, use_guess_read=True, walltime='2:00:00',
-                 launcher='g16sub', cpu_sets=None, mem_per_core_mb=1000):
+                 launcher='g16sub', cpu_sets=None, mem_per_core_mb=1000, nproc_per_state=None):
         """
         Parameters:
         -----------
@@ -408,9 +454,12 @@ class DeltaSCFCalculator:
             launcher='direct' のとき、各状態に割り当てるCPU（%CPUの文字列）
         mem_per_core_mb : int
             launcher='direct' でgjfに%memがない場合の、1コアあたりのメモリ（MB）
+        nproc_per_state : dict
+            状態ごとのコア数（例: {'q0': 12, 'q1': 18, 'qm1': 18}）。ない状態は nproc
         """
         self.gjf_file = gjf_file
         self.nproc = nproc
+        self.nproc_per_state = nproc_per_state or {}
         self.omega_digits = omega_digits
         self.optimization_state = optimization_state if optimization_state is not None else {}
         self.use_guess_read = use_guess_read
@@ -653,12 +702,12 @@ class DeltaSCFCalculator:
                 # ジョブ内で3状態を同時に走らせるので、使うCPUを状態ごとに分ける
                 f.write(f"%cpu={self.cpu_sets[job_suffix]}\n")
             else:
-                f.write(f"%nprocshared={self.nproc}\n")
+                f.write(f"%nprocshared={self._nproc(job_suffix)}\n")
             if self.mem:
                 f.write(f"%mem={self.mem}\n")
             elif self.launcher == 'direct':
                 # g16subを通さないので%memを自分で指定する
-                f.write(f"%mem={self.nproc * self.mem_per_core_mb}MB\n")
+                f.write(f"%mem={self._nproc(job_suffix) * self.mem_per_core_mb}MB\n")
             if use_guess:
                 f.write(f"%oldchk={prev_chk}.chk\n")  # %chkより前に記述
             f.write(f"%chk={chk_name}.chk\n")
@@ -753,7 +802,7 @@ class DeltaSCFCalculator:
         if self.launcher == 'direct':
             return self._run_g16_direct(gjf_path, job_suffix)
         
-        command = ["g16sub", "-np", str(self.nproc), "--walltime", self.walltime, input_file]
+        command = ["g16sub", "-np", str(self._nproc(job_suffix)), "--walltime", self.walltime, input_file]
         
         try:
             process = subprocess.Popen(
@@ -792,6 +841,10 @@ class DeltaSCFCalculator:
         except Exception as e:
             print(f"    run_gaussian例外: {e}")
             return None
+    
+    def _nproc(self, job_suffix):
+        """この状態のコア数"""
+        return int(self.nproc_per_state.get(job_suffix, self.nproc))
     
     def _run_g16_direct(self, gjf_path, job_suffix=None):
         """ジョブ内でg16を直接実行し、終了を待つ（g16 < xxx.gjf > xxx.out）"""
@@ -1023,16 +1076,16 @@ class OmegaOptimizer:
         self.mem_per_core_mb = int(self.config.get('calculation', {}).get('mem_per_core_mb', 1000))
         self.cpu_sets = None
         if self.launcher == 'direct':
-            nproc = self.config['calculation']['nproc_per_job']
+            nprocs = state_nprocs(self.config)
             cdef = os.environ.get('GAUSS_CDEF')
             if cdef:
-                self.cpu_sets = split_cpu_sets(cdef, nproc, n_slots=n_parallel_slots(self.config))
+                self.cpu_sets = split_cpu_sets(cdef, nprocs, parallel=n_parallel_slots(self.config) > 1)
             if self.cpu_sets:
-                print(f"ジョブ内実行: GAUSS_CDEF={cdef} を各状態に{nproc}コアずつ割り当てます")
+                print(f"ジョブ内実行: GAUSS_CDEF={cdef} を各状態に割り当てます")
                 for state, cpus in self.cpu_sets.items():
-                    print(f"  {state}: %cpu={cpus}")
+                    print(f"  {state}: {nprocs[state]}コア  %cpu={cpus}")
             else:
-                print(f"ジョブ内実行: GAUSS_CDEF={cdef} を分割できないため %nprocshared={nproc} を使います")
+                print(f"ジョブ内実行: GAUSS_CDEF={cdef} を分割できないため %nprocshared を使います")
         
         # chkファイルの自動削除（最適ωのchkは保持）
         # 計算ファイル（gjf/out/chk）の扱い: all（全部残す）/ optimal（最適点のout・chkだけ残す）/ none（全部消す）
@@ -1641,6 +1694,8 @@ class OmegaOptimizer:
             print(f"汎関数: {temp_calculator.method}")
             print(f"基底関数: {temp_calculator.basis}")
             print(f"電荷: {temp_calculator.charge}, 多重度: {temp_calculator.multiplicity}")
+            nprocs = state_nprocs(self.config)
+            print("コア数: " + ", ".join(f"{s} {nprocs[s]}" for s in STATES))
             
             print(f"最適化モード: {self.optimization_mode}")
             
@@ -1725,6 +1780,7 @@ class OmegaOptimizer:
         calculator = DeltaSCFCalculator(
             self.config['molecule']['gjf_file'],
             nproc=self.config['calculation']['nproc_per_job'],
+            nproc_per_state=state_nprocs(self.config),
             omega=omega,
             omega_digits=self.omega_digits,
             alpha=alpha,
@@ -2443,8 +2499,10 @@ def submit_optimization_job(config_file, prepare_only=False):
         print(f"エラー: gjfファイルが見つかりません: {gjf_file}（gjfのあるフォルダで実行してください）")
         sys.exit(1)
     
-    nproc = int(calc['nproc_per_job'])
-    ncpus = nproc * n_parallel_slots(config)
+    nprocs = state_nprocs(config)
+    ncpus = job_ncpus(config)
+    if ncpus > 63:
+        print(f"注意: ジョブのコア数が {ncpus} です（jobtype=core の上限は63コア）")
     job_walltime = seconds_to_walltime(walltime_to_seconds(calc.get('job_walltime', '72:00:00')))
     
     # g16sub -P でジョブスクリプトを作成（gjfはジョブ名・環境設定のためだけに使う）
@@ -2503,8 +2561,11 @@ def submit_optimization_job(config_file, prepare_only=False):
         stale.unlink()  # g16subが作った入力ファイルは使わない
     
     print(f"ジョブスクリプトを作成しました: {job_script}")
-    slots = n_parallel_slots(config)
-    print(f"  コア数: {ncpus}（" + (f"{nproc}コア × {slots}状態を同時に実行" if slots > 1 else "3状態を順番に実行") + "）")
+    breakdown = ' + '.join(f"{s} {nprocs[s]}" for s in STATES)
+    if n_parallel_slots(config) > 1:
+        print(f"  コア数: {ncpus}（{breakdown} を同時に実行）")
+    else:
+        print(f"  コア数: {ncpus}（3状態を順番に実行: {breakdown.replace(' + ', ', ')}）")
     print(f"  walltime: {job_walltime}（最適化全体）")
     print(f"  ログ: {log_file}")
     print(f"  メール通知: {'開始・終了時に送信' if mail else 'なし'}")
