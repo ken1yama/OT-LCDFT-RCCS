@@ -30,6 +30,7 @@ EA の条件には、中性分子の LUMO ではなくアニオンの HOMO を�
 - **1 本のジョブで最適化全体を実行**（`--submit`）：フロントエンドで待機せず、キュー待ちも最初の 1 回だけ
 - **3 状態の同時計算**：q0 / q1 / qm1 を、CPU を分けて同時に計算
 - **中断からの再開**：計算済みの点は再計算せずに最適化を続ける
+- **J 値の計算のみのモード**（`mode: j_only`）：gjf（または YAML）のパラメーターで 3 状態を 1 回計算し、IP・EA・HOMO・J を出力
 - **計算ファイルの整理**（任意）：完了後に、全部残す／最適点の .out・.chk だけ残す／全部消す、を選べる
 
 ## 動作環境
@@ -118,6 +119,7 @@ rm -rf ~/OT-LCDFT-RCCS
 例は [`examples/`](examples/) にあります。
 
 - [`config_simple.yaml`](examples/config_simple.yaml)：ω のみを Brent 法で最適化する場合の簡易版（ふだんはこちら）
+- [`config_j_only.yaml`](examples/config_j_only.yaml)：J 値を計算するだけの場合（下の「J 値の計算のみ」を参照）
 - [`config_example.yaml`](examples/config_example.yaml)：全項目をコメント付きで記載した完全版
 
 ```bash
@@ -217,6 +219,7 @@ C     1.396000     0.000000     0.000000
 
 | 項目 | 内容 |
 |---|---|
+| `mode` | `ot`（パラメーター最適化、既定）／`j_only`（J 値の計算のみ） |
 | `molecule.gjf_file` | 基準となる gjf ファイル |
 | `calculation.nproc_per_job` | 1 状態（1 計算）あたりのコア数 |
 | `calculation.nproc_per_state` | 状態ごとのコア数（例：`{q0: 12, q1: 18, qm1: 18}`。書いた状態だけ `nproc_per_job` より優先） |
@@ -241,6 +244,26 @@ C     1.396000     0.000000     0.000000
 | `optimization.keep_files` | 完了後の計算ファイル：`all`（全部残す）／`optimal`（最適点の .out・.chk だけ）／`none`（全部消す。結果ファイルとグラフは残る） |
 
 `optimization_algorithm` を省略すると、1 次元のモードでは `brent`、`omega_alpha` では `bayesian` になります。
+
+## J 値の計算のみ（mode: j_only）
+
+最適化はせずに、決まったパラメーターで q0 / q1 / qm1 を 1 回ずつ計算し、J 値を求めます。最適化した ω の確認や、別の基底関数・構造での J 値の比較に使えます。
+
+```yaml
+mode: j_only
+molecule:
+  gjf_file: benzene.gjf
+calculation:
+  nproc_per_job: 8
+optimization:
+  max_parallel_jobs: 3
+  fixed_omega: 0.17      # 省略すると gjf の IOp、それもなければ汎関数のデフォルト
+```
+
+- パラメーターの優先順位は「YAML の `fixed_omega` / `fixed_alpha` / β の設定 > gjf の IOp > 汎関数のデフォルト」です。gjf のルート行に IOp を書いておけば、YAML には何も書かなくてかまいません。
+- β は gjf の `IOp(3/119=…,3/120=…)` も読み取ります（YAML の `beta_mode` が `default` のとき）。
+- 結果は `<name>_j_only_results.txt` に出力されます（各状態の全エネルギー、IP、EA、HOMO、HOMO + IP、HOMO + EA、J）。`--submit`（`ot-g16sub`）のときのログは `<name>_j_only.log` です。
+- ω・α・β は小数点以下 4 桁で扱います（`omega_digits` で変更可）。
 
 ## 出力ファイル
 

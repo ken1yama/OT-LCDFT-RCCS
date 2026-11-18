@@ -15,6 +15,8 @@ HOMOエネルギーから J 値を最小化して ω（および α, β）を最
 - 2回目以降の試行では各状態(q0/q1/qm1)の前回chkを %oldchk + Guess=Read で再利用
 - use_existing_outputs: true で中断した最適化を再開（計算済みの点は再計算しない）
 
+- mode: j_only で、gjf（またはYAMLのfixed_*）のパラメーターでJ値を計算するだけのモード
+
 Usage:
     python3 param_opt_RCCS.py --config config.yaml            # フロントエンドで実行（1点ごとにg16subで投入）
     python3 param_opt_RCCS.py --config config.yaml --submit   # 最適化全体を1本のジョブとして投入
@@ -23,7 +25,7 @@ Author : Ken-ichi Yamashita
 License: MIT
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0.dev0"
 
 import os
 import subprocess
@@ -116,6 +118,15 @@ def parse_cpu_list(text):
 
 
 STATES = ('q0', 'q1', 'qm1')
+RUN_MODES = ('ot', 'j_only')  # ot: パラメーター最適化 / j_only: J値の計算のみ
+
+
+def run_mode_of(config):
+    """YAMLの mode（既定は ot）"""
+    mode = str((config or {}).get('mode') or 'ot').lower()
+    if mode not in RUN_MODES:
+        raise ValueError(f"mode は {' / '.join(RUN_MODES)} のいずれかにしてください（現在: {mode}）")
+    return mode
 
 
 def state_nprocs(config):
@@ -206,6 +217,7 @@ def load_yaml(config_file):
 def default_config():
     """デフォルト設定（--create-config のサンプルにも使用）"""
     return {
+        'mode': 'ot',
         'molecule': {
             'gjf_file': 'molecule.gjf'
         },
@@ -269,6 +281,12 @@ class IOPParser:
             alpha_from_iop = int(alpha_str) / 10000.0
         
         return omega_from_iop, alpha_from_iop
+    
+    @staticmethod
+    def extract_beta(route_line):
+        """ルートラインからIOP指定のβを抽出 IOp(3/119=MMMMMNNNNN,3/120=MMMMMNNNNN)"""
+        beta_match = re.search(r'IOp\(3/119=(\d{10}),3/120=\1\)', route_line, re.IGNORECASE)
+        return int(beta_match.group(1)[:5]) / 10000.0 if beta_match else None
 
 
 class GaussianResultParser:
@@ -1007,8 +1025,13 @@ class OmegaOptimizer:
             else:
                 self.config[key] = value
         
-        # 基本設定の取得
-        self.omega_digits = self.config.get('optimization', {}).get('omega_digits', 2)
+        # 実行モード（ot / j_only）
+        self.run_mode = run_mode_of(self.config)
+        self.config.setdefault('optimization', {})
+        
+        # 基本設定の取得（j_onlyではgjfの値を丸めないよう既定を4桁にする）
+        default_digits = 4 if self.run_mode == 'j_only' else 2
+        self.omega_digits = self.config.get('optimization', {}).get('omega_digits', default_digits)
         if self.omega_digits not in [2, 3, 4]:
             raise ValueError("omega_digits must be 2, 3, or 4")
         
@@ -1047,10 +1070,21 @@ class OmegaOptimizer:
         if self.algorithm in ['brent', 'golden_section'] and self.optimization_mode not in ['omega_only', 'alpha_only']:
             raise ValueError(f"{self.algorithm} is only available for 1D optimization (omega_only or alpha_only)")
         
-        print(f"\n選択された最適化アルゴリズム: {self.algorithm}")
+        if self.run_mode == 'ot':
+            print(f"\n選択された最適化アルゴリズム: {self.algorithm}")
+        else:
+            print("\nモード: j_only（J値の計算のみ）")
         
         # gjfファイルからIOPパラメータを抽出
         self.gjf_omega, self.gjf_alpha = self.extract_gjf_parameters()
+        
+        # j_only: YAMLでβを指定していなければ、gjfのβのIOpを使う
+        if self.run_mode == 'j_only' and self.beta_mode == 'default':
+            gjf_beta = self.extract_gjf_beta()
+            if gjf_beta is not None:
+                self.beta_mode = 'fixed'
+                self.fixed_beta = gjf_beta
+                print(f"β固定値: {gjf_beta} (gjfファイルから)")
         
         # パラメータの決定（優先順位: yaml > gjf > default）
         self.omega_value, self.alpha_value = self.determine_parameters()
@@ -1170,6 +1204,14 @@ class OmegaOptimizer:
             print(f"gjfファイルからのIOPパラメータ抽出に失敗: {e}")
             return None, None
     
+    def extract_gjf_beta(self):
+        """gjfファイルからβのIOPを抽出"""
+        try:
+            with open(self.config['molecule']['gjf_file'], 'r') as f:
+                return IOPParser.extract_beta(read_route_line(f.readlines()))
+        except Exception:
+            return None
+    
     def determine_parameters(self):
         """パラメータの決定（優先順位: yaml > gjf > Gaussianのデフォルト）"""
         
@@ -1177,8 +1219,12 @@ class OmegaOptimizer:
         yaml_fixed_omega = self.config.get('optimization', {}).get('fixed_omega')
         yaml_fixed_alpha = self.config.get('optimization', {}).get('fixed_alpha')
         
+        # j_only では ω・α とも固定値（yaml > gjf > デフォルト）
+        fix_omega = self.optimization_mode == 'alpha_only' or self.run_mode == 'j_only'
+        fix_alpha = self.optimization_mode == 'omega_only' or self.run_mode == 'j_only'
+        
         # ωの決定
-        if self.optimization_mode == 'alpha_only':
+        if fix_omega:
             # α最適化：ωは固定
             if yaml_fixed_omega is not None:
                 omega_value = yaml_fixed_omega
@@ -1194,7 +1240,7 @@ class OmegaOptimizer:
             omega_value = None
         
         # αの決定
-        if self.optimization_mode == 'omega_only':
+        if fix_alpha:
             # ω最適化：αは固定
             if yaml_fixed_alpha is not None:
                 alpha_value = yaml_fixed_alpha
@@ -1797,33 +1843,7 @@ class OmegaOptimizer:
         
         print(f"\n{label} での計算開始")
         
-        calculator = DeltaSCFCalculator(
-            self.config['molecule']['gjf_file'],
-            nproc=max(state_nprocs(self.config).values()),
-            nproc_per_state=state_nprocs(self.config),
-            omega=omega,
-            omega_digits=self.omega_digits,
-            alpha=alpha,
-            epsilon=self.epsilon,
-            beta_mode=self.beta_mode,
-            beta_constraint=self.beta_constraint,
-            fixed_beta=self.fixed_beta,
-            optimization_state=self.optimization_state,
-            use_guess_read=self.config['optimization'].get('use_guess_read', True),
-            walltime=self.walltime,
-            launcher=self.launcher,
-            cpu_sets=self.cpu_sets,
-            mem_per_core_mb=self.mem_per_core_mb
-        )
-        
-        # 並列実行の設定
-        max_parallel = self.config['optimization'].get('max_parallel_jobs', 1)
-        parallel = max_parallel > 1
-        
-        results = calculator.calculate_delta_scf(
-            parallel=parallel,
-            max_workers=min(max_parallel, 3)
-        )
+        results = self._run_delta_scf(omega, alpha)
         self.created_chk.update(self._job_names(omega, alpha).values())
         
         if results is None:
@@ -1875,6 +1895,111 @@ class OmegaOptimizer:
         self._check_j_threshold(j_value)
         return j_value
     
+    def _make_calculator(self, omega, alpha):
+        """この最適化の設定で、指定した(ω, α)の DeltaSCFCalculator を作る"""
+        return DeltaSCFCalculator(
+            self.config['molecule']['gjf_file'],
+            nproc=max(state_nprocs(self.config).values()),
+            nproc_per_state=state_nprocs(self.config),
+            omega=omega,
+            omega_digits=self.omega_digits,
+            alpha=alpha,
+            epsilon=self.epsilon,
+            beta_mode=self.beta_mode,
+            beta_constraint=self.beta_constraint,
+            fixed_beta=self.fixed_beta,
+            optimization_state=self.optimization_state,
+            use_guess_read=self.config['optimization'].get('use_guess_read', True),
+            walltime=self.walltime,
+            launcher=self.launcher,
+            cpu_sets=self.cpu_sets,
+            mem_per_core_mb=self.mem_per_core_mb
+        )
+    
+    def _run_delta_scf(self, omega, alpha):
+        """指定した(ω, α)で3状態を計算し、ΔSCFの結果（失敗時は None）を返す"""
+        max_parallel = self.config['optimization'].get('max_parallel_jobs', 1)
+        return self._make_calculator(omega, alpha).calculate_delta_scf(
+            parallel=max_parallel > 1,
+            max_workers=min(max_parallel, 3)
+        )
+    
+    def run_j_only(self):
+        """mode: j_only — 決まったパラメーターで3状態を1回計算し、J値を出力する"""
+        omega, alpha = self.omega_value, self.alpha_value
+        fmt = lambda v: f"{v:.{self.omega_digits}f}" if v is not None else "Gaussianデフォルト"
+        calc_info = self._make_calculator(omega, alpha)
+        beta = calc_info.beta
+        
+        print("=" * 60)
+        print("J値の計算（mode: j_only）")
+        print("=" * 60)
+        print(f"分子: {self.config['molecule']['gjf_file']}")
+        print(f"汎関数: {calc_info.method}")
+        print(f"基底関数: {calc_info.basis}")
+        print(f"電荷: {calc_info.charge}, 多重度: {calc_info.multiplicity}")
+        nprocs = state_nprocs(self.config)
+        print("コア数: " + ", ".join(f"{st} {nprocs[st]}" for st in STATES))
+        print(f"ω: {fmt(omega)}")
+        print(f"α: {fmt(alpha)}")
+        print(f"β: {fmt(beta)}")
+        print("=" * 60)
+        
+        results = self._run_delta_scf(omega, alpha)
+        base_name = Path(self.config['molecule']['gjf_file']).stem
+        results_file = f"{base_name}_j_only_results.txt"
+        
+        if results is None:
+            print("\n計算に失敗しました（各状態の .out を確認してください）")
+            sys.exit(1)
+        
+        d_ip = results['E_homo_q0_eV'] + results['IP_eV']
+        d_ea = results['E_homo_qm1_eV'] + results['EA_eV']
+        lumo_q0 = results.get('E_lumo_q0')
+        lines = [
+            f"Executed Script: {os.path.basename(__file__)} (version {__version__})",
+            "",
+            "J-value Calculation (mode: j_only)",
+            "=" * 50,
+            f"Molecule: {self.config['molecule']['gjf_file']}",
+            f"Method: {calc_info.method}",
+            f"Basis: {calc_info.basis}",
+            f"Charge: {calc_info.charge}, Multiplicity: {calc_info.multiplicity}",
+            f"Omega: {fmt(omega)}",
+            f"Alpha: {fmt(alpha)}",
+            f"Beta: {fmt(beta)}",
+            "",
+            "Total energies (Hartree)",
+            f"  E(q0)  = {results['E_q0']:.8f}",
+            f"  E(q1)  = {results['E_q1']:.8f}",
+            f"  E(qm1) = {results['E_qm1']:.8f}",
+            "",
+            "Energies (eV)",
+            f"  IP = E(q1) - E(q0)          = {results['IP_eV']:.4f}",
+            f"  EA = E(q0) - E(qm1)         = {results['EA_eV']:.4f}",
+            f"  HOMO(q0)                    = {results['E_homo_q0_eV']:.4f}",
+            f"  HOMO(qm1)                   = {results['E_homo_qm1_eV']:.4f}",
+        ]
+        if lumo_q0 is not None:
+            lines.append(f"  LUMO(q0)                    = {lumo_q0 * JValueCalculator.HARTREE_TO_EV:.4f}")
+        lines += [
+            f"  HOMO(q0)  + IP              = {d_ip:+.4f}",
+            f"  HOMO(qm1) + EA              = {d_ea:+.4f}",
+            "",
+            f"J = (HOMO(q0) + IP)^2 + (HOMO(qm1) + EA)^2 = {results['J']:.6f} eV^2",
+            "",
+            "Output files: " + ", ".join(f"{n}.out" for n in self._job_names(omega, alpha).values()),
+        ]
+        with open(results_file, 'w') as f:
+            f.write("\n".join(lines) + "\n")
+        
+        print(f"\nIP = {results['IP_eV']:.4f} eV, EA = {results['EA_eV']:.4f} eV")
+        print(f"HOMO(q0) = {results['E_homo_q0_eV']:.4f} eV, HOMO(qm1) = {results['E_homo_qm1_eV']:.4f} eV")
+        print(f"HOMO(q0) + IP = {d_ip:+.4f} eV, HOMO(qm1) + EA = {d_ea:+.4f} eV")
+        print(f"J = {results['J']:.6f} eV²")
+        print(f"\n結果を保存しました: {results_file}")
+        return omega, results['J']
+    
     def _check_j_threshold(self, j_value):
         """J値が閾値以下なら早期終了（StopIteration）"""
         j_threshold = self.config['optimization'].get('j_threshold')
@@ -1883,7 +2008,9 @@ class OmegaOptimizer:
             raise StopIteration()
     
     def optimize(self):
-        """選択されたアルゴリズムで最適化を実行"""
+        """選択されたアルゴリズムで最適化を実行（mode: j_only ではJ値の計算のみ）"""
+        if self.run_mode == 'j_only':
+            return self.run_j_only()
         print(f"\n{'='*60}")
         print(f"最適化アルゴリズム: {self.algorithm}")
         print(f"最適化モード: {self.optimization_mode}")
@@ -2561,7 +2688,12 @@ def submit_optimization_job(config_file, prepare_only=False):
         sys.exit(1)
     
     # g16 を起動する行を、このスクリプトをジョブ内モードで起動する行に置き換える
-    log_file = f"{Path(gjf_file).stem}_opt.log"
+    try:
+        mode = run_mode_of(config)
+    except ValueError as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+    log_file = f"{Path(gjf_file).stem}_{'j_only' if mode == 'j_only' else 'opt'}.log"
     run_line = (f'"{sys.executable}" -u "{Path(__file__).resolve()}" '
                 f'--config "{config_path}" --in-job > {log_file} 2>&1')
     lines = Path(job_script).read_text().splitlines()
