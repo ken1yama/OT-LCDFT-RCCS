@@ -2501,8 +2501,6 @@ def submit_optimization_job(config_file, prepare_only=False):
     
     nprocs = state_nprocs(config)
     ncpus = job_ncpus(config)
-    if ncpus > 63:
-        print(f"注意: ジョブのコア数が {ncpus} です（jobtype=core の上限は63コア）")
     job_walltime = seconds_to_walltime(walltime_to_seconds(calc.get('job_walltime', '72:00:00')))
     
     # g16sub -P でジョブスクリプトを作成（gjfはジョブ名・環境設定のためだけに使う）
