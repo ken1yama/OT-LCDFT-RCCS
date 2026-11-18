@@ -124,12 +124,17 @@ def state_nprocs(config):
     calculation.nproc_per_state で状態ごとに指定でき（例: {q0: 12, q1: 18, qm1: 18}）、
     指定のない状態は calculation.nproc_per_job になる。
     """
-    calc = config.get('calculation', {})
-    default = int(calc['nproc_per_job'])
+    calc = config.get('calculation', {}) or {}
     per_state = calc.get('nproc_per_state') or {}
+    if not isinstance(per_state, dict):
+        raise ValueError("nproc_per_state は q0: / q1: / qm1: の形で書いてください")
     unknown = set(per_state) - set(STATES)
     if unknown:
         raise ValueError(f"nproc_per_state に不明な状態があります: {sorted(unknown)}（q0, q1, qm1 のみ）")
+    default = calc.get('nproc_per_job')
+    missing = [state for state in STATES if state not in per_state]
+    if missing and default is None:
+        raise ValueError(f"calculation.nproc_per_job を書くか、nproc_per_state で {', '.join(missing)} のコア数も指定してください")
     nprocs = {state: int(per_state.get(state, default)) for state in STATES}
     if any(n < 1 for n in nprocs.values()):
         raise ValueError(f"コア数は1以上にしてください: {nprocs}")
@@ -181,6 +186,21 @@ def n_parallel_slots(config):
     """3状態を同時に走らせる数（max_parallel_jobs が1なら1、2以上なら最大3）"""
     max_parallel = config.get('optimization', {}).get('max_parallel_jobs', 1) or 1
     return min(max_parallel, 3) if max_parallel > 1 else 1
+
+
+def load_yaml(config_file):
+    """YAMLを読み込む。書式の誤りは、行番号と字下げのヒントを付けて終了する"""
+    try:
+        with open(config_file, 'r') as f:
+            return yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        mark = getattr(e, 'problem_mark', None)
+        where = f"（{mark.line + 1}行目付近）" if mark else ""
+        print(f"エラー: 設定ファイル {config_file} の書式に誤りがあります{where}")
+        print("  多くの場合は字下げ（行頭の空白の数）のずれです。同じ階層の項目は空白の数をそろえてください。")
+        print("  コメントを外すときは、# の後ろの空白も一緒に消すと字下げがそろいます。")
+        print(f"\n  詳細: {e}")
+        sys.exit(1)
 
 
 def default_config():
@@ -1426,8 +1446,7 @@ class OmegaOptimizer:
         config_path = Path(config_file)
         
         if config_path.suffix.lower() == '.yaml' or config_path.suffix.lower() == '.yml':
-            with open(config_file, 'r') as f:
-                return yaml.safe_load(f)
+            return load_yaml(config_file)
         elif config_path.suffix.lower() == '.json':
             with open(config_file, 'r') as f:
                 return json.load(f)
@@ -1780,7 +1799,7 @@ class OmegaOptimizer:
         
         calculator = DeltaSCFCalculator(
             self.config['molecule']['gjf_file'],
-            nproc=self.config['calculation']['nproc_per_job'],
+            nproc=max(state_nprocs(self.config).values()),
             nproc_per_state=state_nprocs(self.config),
             omega=omega,
             omega_digits=self.omega_digits,
@@ -2491,8 +2510,7 @@ def submit_optimization_job(config_file, prepare_only=False):
     （方法は shin1koda/rccs-dmf-g16sub を参考にした）
     """
     config_path = Path(config_file).resolve()
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    config = load_yaml(config_path)
     
     calc = config.get('calculation', {})
     gjf_file = config['molecule']['gjf_file']
@@ -2500,7 +2518,11 @@ def submit_optimization_job(config_file, prepare_only=False):
         print(f"エラー: gjfファイルが見つかりません: {gjf_file}（gjfのあるフォルダで実行してください）")
         sys.exit(1)
     
-    nprocs = state_nprocs(config)
+    try:
+        nprocs = state_nprocs(config)
+    except (ValueError, TypeError) as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
     ncpus = job_ncpus(config)
     if ncpus > MAX_JOB_NCPUS:
         breakdown = ' + '.join(f"{s} {nprocs[s]}" for s in STATES)
