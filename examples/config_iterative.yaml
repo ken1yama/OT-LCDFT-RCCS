@@ -67,7 +67,8 @@ iteration:
                                # （ΔJ に当たる Δω は J の曲線の曲率で決まり、系によって変わるため。
                                #   Step4 では参考として、曲率から見積もった Δω をログに表示する）
 
-  search_range: 0.02           # 2回目以降のOT: 前回の ω ± この幅で最小値を挟んでから絞り込む
-                               # （挟めなければ omega_min〜omega_max で最初から探索し直す）
+  search_range: 0.02           # 2回目以降のOT: 前回の ω の両側を調べる幅の上限
+                               # （まず Δω の見積もりの3倍（0.005以上、見積もりがなければ0.01）で調べ、
+                               #   挟めなければこの幅、それでもだめなら omega_min〜omega_max で探索し直す）
   opt_keyword: Opt             # 構造最適化のキーワード（例: 'Opt=(CalcFC,MaxCycles=200)'）
   final_optimization: false    # true: 判定Aで終わったとき、最終の ω でもう一度構造最適化する
