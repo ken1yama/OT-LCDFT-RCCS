@@ -6,7 +6,7 @@
 # 全項目の説明は config_example.yaml を参照
 # =====================================================================
 
-mode: ot                       # ot: パラメーター最適化 / j_only: J値の計算のみ（config_j_only.yaml）
+mode: ot                       # ot: パラメーター最適化 / j_only: J値の計算のみ / iterative: OTと構造最適化の繰り返し
 
 molecule:
   gjf_file: benzene.gjf        # 基準となるgjf（このフォルダに置く）

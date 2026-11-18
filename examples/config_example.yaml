@@ -13,6 +13,7 @@
 # =====================================================================
 
 # 実行モード: ot（パラメーター最適化、既定）/ j_only（J値の計算のみ。config_j_only.yaml を参照）
+#           / iterative（OTと構造最適化の繰り返し。config_iterative.yaml を参照）
 mode: ot
 
 molecule:

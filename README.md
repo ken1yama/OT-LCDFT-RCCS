@@ -31,6 +31,7 @@ EA の条件には、中性分子の LUMO ではなくアニオンの HOMO を�
 - **3 状態の同時計算**：q0 / q1 / qm1 を、CPU を分けて同時に計算
 - **中断からの再開**：計算済みの点は再計算せずに最適化を続ける
 - **J 値の計算のみのモード**（`mode: j_only`）：gjf（または YAML）のパラメーターで 3 状態を 1 回計算し、IP・EA・HOMO・J を出力
+- **OT と構造最適化の繰り返し**（`mode: iterative`）：ω と構造が互いに整合するまで、OT と構造最適化を 1 本のジョブで繰り返す
 - **計算ファイルの整理**（任意）：完了後に、全部残す／最適点の .out・.chk だけ残す／全部消す、を選べる
 
 ## 動作環境
@@ -120,6 +121,7 @@ rm -rf ~/OT-LCDFT-RCCS
 
 - [`config_simple.yaml`](examples/config_simple.yaml)：ω のみを Brent 法で最適化する場合の簡易版（ふだんはこちら）
 - [`config_j_only.yaml`](examples/config_j_only.yaml)：J 値を計算するだけの場合（下の「J 値の計算のみ」を参照）
+- [`config_iterative.yaml`](examples/config_iterative.yaml)：OT と構造最適化を繰り返す場合（下の「OT と構造最適化の繰り返し」を参照）
 - [`config_example.yaml`](examples/config_example.yaml)：全項目をコメント付きで記載した完全版
 
 ```bash
@@ -219,7 +221,7 @@ C     1.396000     0.000000     0.000000
 
 | 項目 | 内容 |
 |---|---|
-| `mode` | `ot`（パラメーター最適化、既定）／`j_only`（J 値の計算のみ） |
+| `mode` | `ot`（パラメーター最適化、既定）／`j_only`（J 値の計算のみ）／`iterative`（OT と構造最適化の繰り返し） |
 | `molecule.gjf_file` | 基準となる gjf ファイル |
 | `calculation.nproc_per_job` | 1 状態（1 計算）あたりのコア数 |
 | `calculation.nproc_per_state` | 状態ごとのコア数（例：`{q0: 12, q1: 18, qm1: 18}`。書いた状態だけ `nproc_per_job` より優先） |
@@ -265,6 +267,67 @@ optimization:
 - 結果は `<name>_j_only_results.txt` に出力されます（各状態の全エネルギー、IP、EA、HOMO、HOMO + IP、HOMO + EA、J）。`--submit`（`ot-g16sub`）のときのログは `<name>_j_only.log` です。
 - ω・α・β は小数点以下 4 桁で扱います（`omega_digits` で変更可）。
 
+## OT と構造最適化の繰り返し（mode: iterative）
+
+最適な ω は構造によって変わり、構造も ω によって変わります。このモードでは、OT と構造最適化を、ω と構造が互いに整合するまで繰り返します。全体が 1 本のジョブで実行されます。
+
+```
+[Step1]（任意）最初の構造最適化              iteration.initial_optimization: true
+反復 N:
+  [Step2] OT → ω_N                          判定A: |ω_N − ω_{N−1}| < omega_threshold
+  [Step3] ω_N で構造最適化                    判定B: RMSD < rmsd_threshold かつ 最大変位 < max_displacement_threshold
+  [Step4] 新しい構造・ω_N で J を計算          判定C: |J(新しい構造) − J(前の構造)| < j_threshold
+```
+
+A・B・C のどれか 1 つを満たした時点で終了します。設定例は [`examples/config_iterative.yaml`](examples/config_iterative.yaml) です。
+
+```yaml
+mode: iterative
+molecule:
+  gjf_file: benzene.gjf
+calculation:
+  nproc_per_job: 8
+  job_walltime: '168:00:00'
+optimization:            # 1 回目の OT の設定（mode: ot と同じ）
+  optimization_mode: omega_only
+  optimization_algorithm: brent
+  omega_min: 0.12
+  omega_max: 0.5
+iteration:
+  max_iterations: 5
+  omega_threshold: 0.001         # 判定A（bohr⁻¹）
+  rmsd_threshold: 0.01           # 判定B（Å）
+  max_displacement_threshold: 0.02
+  j_threshold: 0.001             # 判定C（eV²）
+```
+
+| 項目（`iteration.`） | 内容（既定値） |
+|---|---|
+| `initial_optimization` | 最初に gjf の条件（gjf の ω、なければ汎関数のデフォルト）で構造最適化する（`false`） |
+| `max_iterations` | 反復の最大回数。達したら「収束していません」として終了（`5`） |
+| `omega_threshold` | 判定A：前の反復との ω の差（`0.001`） |
+| `rmsd_threshold`, `max_displacement_threshold` | 判定B：前の構造との RMSD と原子の最大変位（Å、重ね合わせ後。両方を満たしたとき）（`0.01`, `0.02`） |
+| `j_threshold` | 判定C：構造が変わったことによる J の変化（eV²）（`0.001`） |
+| `search_range` | 2 回目以降の OT の探索幅：前回の ω ± この幅（`0.02`） |
+| `opt_keyword` | 構造最適化のキーワード（例：`'Opt=(CalcFC,MaxCycles=200)'`）（`Opt`） |
+| `final_optimization` | 判定A で終わったとき、最終の ω でもう一度構造最適化する（`false`） |
+
+判定の閾値を `0` または `null` にすると、その判定は使いません。
+
+- **基底関数・汎関数**：gjf の記述をそのまま使います（Gen / GenECP の指定も引き継ぎます）。OT と構造最適化で同じものが使われます。gjf のルート行の `Opt` / `Freq` は取り除かれ、構造最適化のステップでだけ `opt_keyword` が付きます。
+- **対応するモード**：`optimization_mode: omega_only` のみです。α・β は全反復で固定です（優先順位は「YAML > gjf の IOp > 汎関数のデフォルト」）。
+- **2 回目以降の OT**：Step4 の点（新しい構造・前回の ω）を中心に、± `search_range` の 2 点を計算して最小値を挟み、放物線補間で絞り込みます。ω はふつう少ししか変わらないので、1 回の OT は数点で終わります。挟めなかった場合は `omega_min`〜`omega_max` で最初から探索し直します。
+- **Guess=Read**：各状態の chk を、ω の試行の間だけでなく反復をまたいでも引き継ぎます。構造最適化は、直前の OT の最適点の q0 の chk を初期軌道に使います。
+- **コア数**：OT は通常と同じく 3 状態を同時に計算し、構造最適化はジョブ全体のコア（例：8 × 3 = 24）で 1 本計算します。
+- **ω の振動**：ω が 2 つの値を行き来している（ω_N ≈ ω_{N−2}）場合は、収束していないものとして停止します。
+- **中断と再開**：同じフォルダで同じコマンド（`ot-g16sub config_iterative.yaml`）を実行すると、終わっている OT の点・構造最適化を読み込んで続きから再開します。途中で終わった構造最適化は、最後の構造から計算し直します。`use_existing_outputs` を書き換える必要はありません。
+- **ファイル**：各ステップは `iter0_opt/`、`iter1_ot/`、`iter1_opt/`、`iter2_ot/`、… のフォルダで計算されます（`final_optimization` は `final_opt/`）。再開と Guess=Read に使うため、`keep_files` は使わず、計算ファイルはすべて残します。
+- **出力**：
+  - `<name>_iterative_summary.txt`（`.json`）：各反復の ω、J、Step4 の J、Δω、RMSD、最大変位、構造最適化のエネルギー
+  - `<name>_iterative.png`：ω と RMSD の推移
+  - `<name>_OT_final.gjf`：最終構造・最終 ω の一点計算の入力（そのまま次の計算に使えます）
+  - `<name>_iterative.log`：`--submit` のときの実行ログ
+
 ## 出力ファイル
 
 ファイル名の `<name>` は gjf ファイル名（拡張子なし）です。
@@ -285,7 +348,7 @@ optimization:
   use_existing_outputs: true
 ```
 
-を加えて同じコマンドを実行します。
+を加えて同じコマンドを実行します（`mode: iterative` では書き換えは不要です）。
 計算済みの点は既存の `.out` から読み込まれ、続きの点から計算が始まります。固定パラメーターや β の設定が現在と異なる結果は読み込みません。
 
 ## 注意事項

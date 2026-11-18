@@ -1,0 +1,71 @@
+# =====================================================================
+# param_opt_RCCS.py OTと構造最適化の繰り返し（mode: iterative）
+#
+#   ot-g16sub config_iterative.yaml
+#
+# ωの最適チューニング（OT）と、その ω での構造最適化を、ωと構造が
+# 互いに整合するまで繰り返す。全体が1本のジョブで実行される。
+#
+#   [Step1]（任意）最初の構造最適化            initial_optimization: true
+#   反復 N:
+#     [Step2] OT → ω_N                        判定A: |ω_N − ω_{N−1}| < omega_threshold
+#     [Step3] ω_N で構造最適化                  判定B: RMSD < rmsd_threshold かつ
+#                                                      最大変位 < max_displacement_threshold
+#     [Step4] 新しい構造・ω_N で J を計算        判定C: |J(新しい構造) − J(前の構造)| < j_threshold
+#   A・B・C のどれか1つを満たした時点で終了する。
+#
+# - 汎関数・基底関数（Gen/GenECP を含む）・%mem・その他のキーワードは gjf の記述をそのまま使う
+#   （gjf の Opt / Freq は取り除かれ、構造最適化のステップでだけ opt_keyword が付く）
+# - optimization_mode は omega_only のみ。α・β は全反復で固定（優先順位: YAML > gjf の IOp > 汎関数のデフォルト）
+# - 各ステップは iter0_opt/, iter1_ot/, iter1_opt/, iter2_ot/, … のフォルダで計算される
+# - 中断しても、同じコマンドで再投入すれば、終わっているステップを読み込んで続きから再開する
+#   （use_existing_outputs を書き換える必要はない）
+# =====================================================================
+
+mode: iterative
+
+molecule:
+  gjf_file: benzene.gjf        # 基準となるgjf（このフォルダに置く）
+
+calculation:
+  nproc_per_job: 8             # OTの1状態あたりのコア数（ジョブ全体は ×3 = 24コア）
+  # ※ 3状態の合計は64コアまで。構造最適化はジョブ全体のコア（この例では24）で1本計算する
+  #nproc_per_state:
+  #  q0: 12
+  #  q1: 18
+  #  qm1: 18
+  job_walltime: '168:00:00'    # 繰り返し全体のwalltime（OT と構造最適化を何回も行うので長めに）
+  mail: false                  # true: ジョブの開始・終了時にメールで通知
+
+optimization:
+  # ---- 1回目のOT（通常の mode: ot と同じ設定）----
+  optimization_mode: omega_only   # iterative では omega_only のみ
+  optimization_algorithm: brent
+  omega_min: 0.12
+  omega_max: 0.5
+  omega_digits: 4              # 小数点以下の桁数（2〜4）。判定Aの閾値より細かくしておく
+  n_calls: 15
+  max_parallel_jobs: 3
+
+  # ---- α・β（全反復で固定。null / default なら gjf の IOp、それもなければ汎関数のデフォルト）----
+  fixed_alpha: null
+  beta_mode: default           # default / constraint（α+β=C）/ fixed
+  beta_constraint: null
+  fixed_beta: null
+  epsilon: 1.0
+  # ※ iterative では keep_files は使わず、計算ファイルはすべて残す（再開と Guess=Read に使うため）
+
+iteration:
+  initial_optimization: false  # true: 最初に gjf の条件（gjf の ω、なければ汎関数のデフォルト）で構造最適化する
+  max_iterations: 5            # 反復の最大回数（達したら「収束していません」として終了）
+
+  # ---- 終了の判定（0 または null にすると、その判定は使わない）----
+  omega_threshold: 0.001       # 判定A: |Δω|（bohr⁻¹）
+  rmsd_threshold: 0.01         # 判定B: 前の構造との RMSD（Å、重ね合わせ後）
+  max_displacement_threshold: 0.02  # 判定B: 原子の最大変位（Å）。RMSD と両方を満たしたとき
+  j_threshold: 0.001           # 判定C: 構造が変わったことによる J の変化（eV²）
+
+  search_range: 0.02           # 2回目以降のOT: 前回の ω ± この幅で最小値を挟んでから絞り込む
+                               # （挟めなければ omega_min〜omega_max で最初から探索し直す）
+  opt_keyword: Opt             # 構造最適化のキーワード（例: 'Opt=(CalcFC,MaxCycles=200)'）
+  final_optimization: false    # true: 判定Aで終わったとき、最終の ω でもう一度構造最適化する

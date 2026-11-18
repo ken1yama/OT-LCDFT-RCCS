@@ -16,6 +16,7 @@ HOMOエネルギーから J 値を最小化して ω（および α, β）を最
 - use_existing_outputs: true で中断した最適化を再開（計算済みの点は再計算しない）
 
 - mode: j_only で、gjf（またはYAMLのfixed_*）のパラメーターでJ値を計算するだけのモード
+- mode: iterative で、OTと構造最適化をωと構造が整合するまで繰り返す（iterative_RCCS.py）
 
 Usage:
     python3 param_opt_RCCS.py --config config.yaml            # フロントエンドで実行（1点ごとにg16subで投入）
@@ -118,7 +119,7 @@ def parse_cpu_list(text):
 
 
 STATES = ('q0', 'q1', 'qm1')
-RUN_MODES = ('ot', 'j_only')  # ot: パラメーター最適化 / j_only: J値の計算のみ
+RUN_MODES = ('ot', 'j_only', 'iterative')  # ot: パラメーター最適化 / j_only: J値の計算のみ / iterative: OTと構造最適化の繰り返し
 
 
 def run_mode_of(config):
@@ -2646,6 +2647,15 @@ def submit_optimization_job(config_file, prepare_only=False):
         sys.exit(1)
     
     try:
+        mode = run_mode_of(config)
+    except ValueError as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+    if mode == 'iterative' and (config.get('optimization') or {}).get('optimization_mode', 'omega_only') != 'omega_only':
+        print("エラー: mode: iterative は optimization_mode: omega_only のみ対応しています")
+        sys.exit(1)
+    
+    try:
         nprocs = state_nprocs(config)
     except (ValueError, TypeError) as e:
         print(f"エラー: {e}")
@@ -2688,12 +2698,7 @@ def submit_optimization_job(config_file, prepare_only=False):
         sys.exit(1)
     
     # g16 を起動する行を、このスクリプトをジョブ内モードで起動する行に置き換える
-    try:
-        mode = run_mode_of(config)
-    except ValueError as e:
-        print(f"エラー: {e}")
-        sys.exit(1)
-    log_file = f"{Path(gjf_file).stem}_{'j_only' if mode == 'j_only' else 'opt'}.log"
+    log_file = f"{Path(gjf_file).stem}_{ {'j_only': 'j_only', 'iterative': 'iterative'}.get(mode, 'opt') }.log"
     run_line = (f'"{sys.executable}" -u "{Path(__file__).resolve()}" '
                 f'--config "{config_path}" --in-job > {log_file} 2>&1')
     lines = Path(job_script).read_text().splitlines()
@@ -2782,6 +2787,26 @@ def main():
             sys.exit(1)
         submit_optimization_job(args.config, prepare_only=args.prepare_only)
         return
+    
+    # 反復モード（OTと構造最適化の繰り返し）は iterative_RCCS.py で実行
+    if args.config:
+        try:
+            mode = run_mode_of(load_yaml(args.config))
+        except ValueError as e:
+            print(f"エラー: {e}")
+            sys.exit(1)
+        if mode == 'iterative':
+            try:
+                # iterative_RCCS が import するこのモジュールを、実行中のものと同一にする（二重読み込みを防ぐ）
+                sys.modules.setdefault('param_opt_RCCS', sys.modules[__name__])
+                import iterative_RCCS
+                iterative_RCCS.run_iterative(args.config, launcher='direct' if args.in_job else 'g16sub')
+            except Exception as e:
+                print(f"反復モードの実行中にエラーが発生しました: {e}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
+            return
     
     # 設定の準備
     if args.config:
