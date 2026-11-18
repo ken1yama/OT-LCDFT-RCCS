@@ -78,6 +78,7 @@ def read_route_line(lines):
 
 
 WALLTIME_MARGIN_SEC = 600  # walltime超過判定の余裕（.outのコピーバック等）
+MAX_JOB_NCPUS = 64  # --submit のジョブの上限（3つの計算を1ノード内で走らせるため）
 
 
 def walltime_to_seconds(walltime):
@@ -2501,6 +2502,12 @@ def submit_optimization_job(config_file, prepare_only=False):
     
     nprocs = state_nprocs(config)
     ncpus = job_ncpus(config)
+    if ncpus > MAX_JOB_NCPUS:
+        breakdown = ' + '.join(f"{s} {nprocs[s]}" for s in STATES)
+        print(f"エラー: ジョブのコア数が {ncpus}（{breakdown}）です。{MAX_JOB_NCPUS}コア以下にしてください。")
+        print("  --submit では3つのGaussian計算を1ノード内で同時に走らせるため、")
+        print("  複数ノードにまたがるジョブ（65コア以上）には対応していません。")
+        sys.exit(1)
     job_walltime = seconds_to_walltime(walltime_to_seconds(calc.get('job_walltime', '72:00:00')))
     
     # g16sub -P でジョブスクリプトを作成（gjfはジョブ名・環境設定のためだけに使う）
