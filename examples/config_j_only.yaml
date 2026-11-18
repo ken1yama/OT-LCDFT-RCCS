@@ -34,6 +34,7 @@ optimization:
   fixed_omega: null            # 例: 0.17
   fixed_alpha: null            # 例: 0.2
   beta_mode: default           # default（gjfのIOpまたは汎関数のデフォルト）/ constraint（α+β=C）/ fixed
+                               # ※ α を指定するとき（YAML か gjf）は、β も指定が必要（α + β ≤ 1 を確認するため）
   beta_constraint: null        # constraint のとき: 数値 C、または solvent（C = 1/ε）
   fixed_beta: null             # fixed のときのβ
   epsilon: 1.0                 # beta_constraint: solvent のときの比誘電率

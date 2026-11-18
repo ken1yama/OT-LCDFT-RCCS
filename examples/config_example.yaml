@@ -81,12 +81,16 @@ optimization:
 
   # ---- αの探索範囲 ----（alpha_only / omega_alpha で使用）
   alpha_min: 0.0
-  alpha_max: 0.5        # beta_constraint: solvent のときは 1/ε を超えないよう自動で制限
+  alpha_max: 0.5        # constraint のときは C、fixed のときは 1 − β を超えないよう自動で制限
 
   # ---- βの扱い ----
-  # βのIOpは、αをIOpで指定するとき（fixed_alphaあり、またはαを最適化）のみ書き込まれる。
-  # αが汎関数デフォルトのままなら、βも指定しない。
-  # default   : βのIOp指定なし（汎関数のデフォルトを使用）
+  # 長距離のHF交換の割合は α + β で、1 以下である必要がある（気相で長距離を正しく −1/r にするなら α + β = 1）。
+  # Gaussian では α と β が独立に扱われるので、α だけ変えると α + β が 1 を超えることがある
+  # （例: LC-BLYP は β = 1）。そのため、α を指定するとき（fixed_alpha、gjf の IOp(3/130,3/131)）や
+  # α を最適化するときは、β の指定が必須（default のままだと計算を始める前にエラーで止まる）。
+  # α + β > 1 になる fixed_beta もエラーになる。
+  # βのIOpは、αをIOpで指定するときのみ書き込まれる。αが汎関数デフォルトのままなら、βもデフォルト。
+  # default   : gjf に IOp(3/119,3/120) があればその値、なければ汎関数のデフォルト
   # constraint: α + β = C を保つ（β = C − α）
   # fixed     : βを fixed_beta に固定
   beta_mode: default

@@ -18,8 +18,16 @@ param_opt_RCCS.py から呼び出される（単独では実行しない）。
 - 2回目以降のOTは、前回の ω を中心に ±search_range で最小値を挟み込んでから絞り込む
 - 再投入すると、終わっているステップの結果を読み込んで続きから再開する
 - 閾値を 0 または null にすると、その判定は使わない
+
+判定C について:
+  最小値の近くでは J ≈ J_min + k(Δω)² なので、1点の ΔJ から言える Δω は √(ΔJ/k) 程度で、
+  曲率 k は系によって大きく変わる（eV² の閾値の意味が系ごとに変わる）。さらに1点だけでは、
+  ω がずれたのか J_min 自体が変わったのかを区別できない。そこで既定では使わず、Step4 では
+  参考として、直前のOTの曲率から見積もった Δω を表示するだけにしている。
 """
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -36,7 +44,7 @@ DEFAULT_ITERATION = {
     'omega_threshold': 0.001,
     'rmsd_threshold': 0.01,
     'max_displacement_threshold': 0.02,
-    'j_threshold': 0.001,
+    'j_threshold': None,          # 判定C は既定では使わない（冒頭の「判定C について」を参照）
     'search_range': 0.02,
     'opt_keyword': 'Opt',
     'final_optimization': False,
@@ -200,6 +208,13 @@ class IterativeOptimizer:
         self.nprocs = core.state_nprocs(self.config)
         self.history = []
 
+        # α を変えるときの β の確認（Step1 の構造最適化より前に止める）
+        for note in core.check_alpha_beta(self.config, self.source_gjf):
+            print(note)
+        with open(self.source_gjf, 'r') as f:
+            route = core.read_route_line(f.readlines())
+        self.beta_mode, self.beta_constraint, self.fixed_beta, _ = core.resolve_beta(opt, route)
+
     # ---- 判定 ----
     @staticmethod
     def _below(value, threshold):
@@ -231,8 +246,8 @@ class IterativeOptimizer:
         calc = core.DeltaSCFCalculator(
             str(gjf), nproc=nproc, nproc_per_state={'opt': nproc},
             omega=omega, omega_digits=self.digits, alpha=alpha,
-            epsilon=opt.get('epsilon', 1.0), beta_mode=opt.get('beta_mode', 'default'),
-            beta_constraint=opt.get('beta_constraint'), fixed_beta=opt.get('fixed_beta'),
+            epsilon=opt.get('epsilon', 1.0), beta_mode=self.beta_mode,
+            beta_constraint=self.beta_constraint, fixed_beta=self.fixed_beta,
             optimization_state={'previous_chk': {'opt': prev_chk} if prev_chk else {}},
             use_guess_read=opt.get('use_guess_read', True),
             walltime=self.config.get('calculation', {}).get('walltime', '2:00:00'),
@@ -299,26 +314,32 @@ class IterativeOptimizer:
             yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
         return path
 
-    def _make_ot(self, step_dir, coords, prev_chks=None):
+    def _make_ot(self, step_dir, coords, prev_chks=None, quiet=False):
+        """OTの準備。quiet: 設定の表示を省く（2回目以降は1回目と同じ内容なので）"""
         step_dir.mkdir(exist_ok=True)
         gjf_name = f"{self.base_name}.gjf"
         write_template_gjf(self.source_gjf, step_dir / gjf_name, coords)
         cfg = self._ot_config(step_dir, gjf_name)
-        cwd = os.getcwd()
-        os.chdir(step_dir)
-        optimizer = core.OmegaOptimizer(str(cfg), **{'calculation.launcher': self.launcher})
-        os.chdir(cwd)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf) if quiet else contextlib.nullcontext():
+            optimizer = self._in_dir(step_dir, core.OmegaOptimizer, str(cfg),
+                                     **{'calculation.launcher': self.launcher})
+        if quiet:
+            optimizer.common_info_printed = True   # 「最適化を開始します」の見出しも省く
+            n_existing = len(optimizer.existing_keys)
+            if n_existing:
+                print(f"  （既存の計算結果 {n_existing} 点を読み込みました）")
         if prev_chks:
             # 前の反復の各状態のchkを、最初の計算のGuess=Readに使う
             for state, path in prev_chks.items():
                 optimizer.optimization_state['previous_chk'].setdefault(state, path)
         return optimizer
 
-    def _in_dir(self, step_dir, func, *args):
+    def _in_dir(self, step_dir, func, *args, **kwargs):
         cwd = os.getcwd()
         try:
             os.chdir(step_dir)
-            return func(*args)
+            return func(*args, **kwargs)
         finally:
             os.chdir(cwd)
 
@@ -365,6 +386,12 @@ class IterativeOptimizer:
 
         max_evals = int(self.config['optimization'].get('n_calls', 15))
         for _ in range(max_evals):
+            # 放物線で予測される J の改善が十分小さければ、頂点を1点だけ計算して終了
+            step = core.parabola_step(pts, self.digits)
+            if step and step[2] < core.PARABOLA_J_GAIN_TOL:
+                if step[0] not in pts:
+                    f(step[0])
+                break
             xs = sorted(pts)
             k = min(range(len(xs)), key=lambda i: pts[xs[i]])
             if k == 0 or k == len(xs) - 1:
@@ -397,6 +424,44 @@ class IterativeOptimizer:
         return {state: str((step_dir / name).resolve()) for state, name in names.items()
                 if (step_dir / f"{name}.chk").exists()}
 
+    @staticmethod
+    def _ot_points(optimizer):
+        """OTで評価した点 {ω: J}（失敗した点を除く）"""
+        return {k[0]: v for k, v in optimizer.evaluated_cache.items() if k[0] is not None and v < 1000}
+
+    @staticmethod
+    def _curvature(pts):
+        """最小値とその両隣の3点から、J ≈ J_min + k(ω − ω_min)² の k を見積もる"""
+        xs = sorted(pts)
+        if len(xs) < 3:
+            return None
+        i = min(range(len(xs)), key=lambda m: pts[xs[m]])
+        if i == 0 or i == len(xs) - 1:
+            return None
+        x0, x1, x2 = xs[i - 1], xs[i], xs[i + 1]
+        k = ((pts[x2] - pts[x1]) / (x2 - x1) - (pts[x1] - pts[x0]) / (x1 - x0)) / (x2 - x0)
+        return k if k > 0 else None
+
+    @staticmethod
+    def _cond(label, value, unit=''):
+        return f"{label}（使わない）" if value in (None, 0) else f"{label} < {value}{unit}"
+
+    def _criterion_b(self, rmsd, max_disp):
+        """判定B: 指定した方（RMSD・最大変位）をすべて満たす。両方とも 0 / null なら使わない"""
+        thr = [(rmsd, self.it['rmsd_threshold']), (max_disp, self.it['max_displacement_threshold'])]
+        used = [(v, t) for v, t in thr if t not in (None, 0)]
+        return bool(used) and all(v < float(t) for v, t in used)
+
+    def _check_final_geometry(self, coords, omega, prev_chks):
+        """最後に構造最適化した構造で、最終の ω の J を計算する（結果の確認用、1点）"""
+        print(f"\n[確認] 最終構造で ω = {omega:.{self.digits}f} の J を計算")
+        step = self.base_dir / 'final_check'
+        optimizer = self._make_ot(step, coords, prev_chks, quiet=True)
+        j = self._in_dir(step, self._evaluate, optimizer, omega)
+        self.history[-1]['j_after_opt'] = j
+        self.history[-1]['final_check'] = True
+        print(f"  J(OTの構造) = {self.history[-1]['j']:.6f}, J(最終構造) = {j:.6f}")
+
     # ---- メインループ ----
     def run(self):
         it = self.it
@@ -406,8 +471,10 @@ class IterativeOptimizer:
         print("=" * 60)
         print(f"分子: {self.source_gjf.name}")
         print(f"最大反復回数: {it['max_iterations']}")
-        print(f"判定A |Δω| < {it['omega_threshold']}, 判定B RMSD < {it['rmsd_threshold']} Å "
-              f"かつ 最大変位 < {it['max_displacement_threshold']} Å, 判定C |ΔJ| < {it['j_threshold']} eV²")
+        print(f"判定A: {self._cond('|Δω|', it['omega_threshold'])}")
+        print(f"判定B: {self._cond('RMSD', it['rmsd_threshold'], ' Å')}, "
+              f"{self._cond('最大変位', it['max_displacement_threshold'], ' Å')}")
+        print(f"判定C: {self._cond('|ΔJ|', it['j_threshold'], ' eV²')}")
         print(f"2回目以降のOTの探索範囲: ±{it['search_range']}")
         print("=" * 60)
 
@@ -427,12 +494,14 @@ class IterativeOptimizer:
         prev = None          # 前の反復の記録
         omega_prev = None
         prev_chks = None
+        prev_points = None   # 前の反復のOTで評価した点（Step4 で Δω を見積もるため）
+        last_chks = None     # 最後のOTの最適点の chk
         final_coords = coords
         for n in range(1, int(it['max_iterations']) + 1):
             print(f"\n{'=' * 60}\n反復 {n}\n{'=' * 60}")
             step_ot = self.base_dir / f"iter{n}_ot"
             geom_before = coords
-            optimizer = self._make_ot(step_ot, coords, prev_chks)
+            optimizer = self._make_ot(step_ot, coords, prev_chks, quiet=(n > 1))
             record = {'iteration': n}
 
             if n == 1:
@@ -445,6 +514,11 @@ class IterativeOptimizer:
                 prev['j_after_opt'] = j_after
                 dj = abs(j_after - prev['j'])
                 print(f"  J(前の構造)={prev['j']:.6f}, J(新しい構造)={j_after:.6f}, |ΔJ|={dj:.6f}")
+                k = self._curvature(prev_points or {})
+                if k:
+                    est = (max(j_after - prev['j'], 0.0) / k) ** 0.5
+                    prev['d_omega_estimate'] = est
+                    print(f"  （参考）直前のOTの曲率 k = {k:.1f} eV²·bohr² から見積もった |Δω| ≈ {est:.{self.digits}f}")
                 if self._below(dj, it['j_threshold']):
                     verdict = f"判定C（|ΔJ| = {dj:.6f} < {it['j_threshold']}）"
                     final_coords = coords
@@ -455,6 +529,8 @@ class IterativeOptimizer:
             if j >= 1000:
                 raise RuntimeError(f"反復{n}のOTで計算に失敗しました（{step_ot} を確認してください）")
             record.update({'omega': omega, 'j': j})
+            prev_points = self._ot_points(optimizer)
+            last_chks = self._best_chks(step_ot, optimizer, omega)
             print(f"  ✓ ω_{n} = {omega:.{self.digits}f}, J = {j:.6f}")
 
             if omega_prev is not None:
@@ -478,7 +554,7 @@ class IterativeOptimizer:
             step_opt = self.base_dir / f"iter{n}_opt"
             step_opt.mkdir(exist_ok=True)
             write_template_gjf(step_ot / f"{self.base_name}.gjf", step_opt / f"{self.base_name}.gjf")
-            ot_chks = self._best_chks(step_ot, optimizer, omega)
+            ot_chks = last_chks
             coords, energy = self.run_geometry_optimization(
                 step_opt, step_opt / f"{self.base_name}.gjf", omega, optimizer.alpha_value,
                 prev_chk=ot_chks.get('q0'))
@@ -490,7 +566,7 @@ class IterativeOptimizer:
             print(f"  判定B: RMSD = {rmsd:.4f} Å, 最大変位 = {max_disp:.4f} Å")
             self.history.append(record)
             final_coords = coords
-            if self._below(rmsd, it['rmsd_threshold']) and self._below(max_disp, it['max_displacement_threshold']):
+            if self._criterion_b(rmsd, max_disp):
                 verdict = f"判定B（RMSD = {rmsd:.4f} Å, 最大変位 = {max_disp:.4f} Å）"
                 break
 
@@ -517,6 +593,12 @@ class IterativeOptimizer:
             self.history[-1].update({'energy': energy, 'rmsd': rmsd, 'max_displacement': max_disp,
                                      'final_optimization': True})
             print(f"  ✓ E = {energy:.8f} Hartree, RMSD = {rmsd:.4f} Å, 最大変位 = {max_disp:.4f} Å")
+
+        # OTのあとに構造が変わったまま終わった場合（判定B・最大反復回数・final_optimization）は、
+        # 最終構造での J を1点だけ計算して確認する
+        last = self.history[-1]
+        if 'energy' in last and 'j_after_opt' not in last:
+            self._check_final_geometry(final_coords, final_omega, last_chks)
 
         self._write_outputs(verdict, final_omega, alpha, final_coords)
         return final_omega, self.history[-1]['j']
@@ -563,9 +645,15 @@ class IterativeOptimizer:
                 f"{fmt(r.get('j_after_opt'), '{:<14.6f}'):<14}{fmt(r.get('d_omega'), '{:<10.5f}'):<10}"
                 f"{fmt(r.get('rmsd'), '{:<9.4f}'):<9}{fmt(r.get('max_displacement'), '{:<11.4f}'):<11}"
                 f"{fmt(r.get('energy'), '{:<18.8f}'):<18}")
-        if self.history and self.history[-1].get('final_optimization'):
-            lines += ["", f"* Iter {self.history[-1]['iteration']}: RMSD/MaxDisp/E(opt) are from the final "
-                          "geometry optimization (final_opt/)"]
+        last = self.history[-1] if self.history else {}
+        if last.get('final_optimization') or last.get('final_check'):
+            lines.append("")
+        if last.get('final_optimization'):
+            lines.append(f"* Iter {last['iteration']}: RMSD/MaxDisp/E(opt) are from the final "
+                         "geometry optimization (final_opt/)")
+        if last.get('final_check'):
+            lines.append(f"* Iter {last['iteration']}: J(new geom) is J at the final geometry "
+                         "and the final omega (final_check/)")
         with open(self.base_dir / f"{self.base_name}_iterative_summary.txt", 'w') as f:
             f.write("\n".join(lines) + "\n")
         with open(self.base_dir / f"{self.base_name}_iterative_summary.json", 'w') as f:

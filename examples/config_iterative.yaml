@@ -11,8 +11,8 @@
 #     [Step2] OT → ω_N                        判定A: |ω_N − ω_{N−1}| < omega_threshold
 #     [Step3] ω_N で構造最適化                  判定B: RMSD < rmsd_threshold かつ
 #                                                      最大変位 < max_displacement_threshold
-#     [Step4] 新しい構造・ω_N で J を計算        判定C: |J(新しい構造) − J(前の構造)| < j_threshold
-#   A・B・C のどれか1つを満たした時点で終了する。
+#     [Step4] 新しい構造・ω_N で J を計算        判定C: |J(新しい構造) − J(前の構造)| < j_threshold（既定では使わない）
+#   A・B・C のどれか1つを満たした時点で終了する。判定B などで終わったときは、最終構造での J を1点計算して確認する。
 #
 # - 汎関数・基底関数（Gen/GenECP を含む）・%mem・その他のキーワードは gjf の記述をそのまま使う
 #   （gjf の Opt / Freq は取り除かれ、構造最適化のステップでだけ opt_keyword が付く）
@@ -48,7 +48,7 @@ optimization:
   max_parallel_jobs: 3
 
   # ---- α・β（全反復で固定。null / default なら gjf の IOp、それもなければ汎関数のデフォルト）----
-  fixed_alpha: null
+  fixed_alpha: null            # 指定するときは β も指定する（例: beta_mode: constraint, beta_constraint: 1.0）
   beta_mode: default           # default / constraint（α+β=C）/ fixed
   beta_constraint: null
   fixed_beta: null
@@ -63,7 +63,9 @@ iteration:
   omega_threshold: 0.001       # 判定A: |Δω|（bohr⁻¹）
   rmsd_threshold: 0.01         # 判定B: 前の構造との RMSD（Å、重ね合わせ後）
   max_displacement_threshold: 0.02  # 判定B: 原子の最大変位（Å）。RMSD と両方を満たしたとき
-  j_threshold: 0.001           # 判定C: 構造が変わったことによる J の変化（eV²）
+  j_threshold: null            # 判定C: 構造が変わったことによる J の変化（eV²）。既定では使わない
+                               # （ΔJ に当たる Δω は J の曲線の曲率で決まり、系によって変わるため。
+                               #   Step4 では参考として、曲率から見積もった Δω をログに表示する）
 
   search_range: 0.02           # 2回目以降のOT: 前回の ω ± この幅で最小値を挟んでから絞り込む
                                # （挟めなければ omega_min〜omega_max で最初から探索し直す）

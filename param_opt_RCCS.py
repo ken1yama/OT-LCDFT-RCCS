@@ -43,17 +43,19 @@ warnings.filterwarnings('ignore')
 import signal
 import sys
 
+# 読み込み時の状況は main() で1回だけ表示する（3状態の並列計算の子プロセスが
+# このファイルを読み直すときに、同じ表示が繰り返されないようにするため）
 try:
     from skopt import gp_minimize
     from skopt.space import Real
     SKOPT_AVAILABLE = True
     import skopt
-    print(f"scikit-optimize version: {skopt.__version__}")
+    SKOPT_STATUS = f"scikit-optimize version: {skopt.__version__}"
 except ImportError as e:
-    print(f"scikit-optimize import error: {e}")
+    SKOPT_STATUS = f"scikit-optimize import error: {e}"
     SKOPT_AVAILABLE = False
 except Exception as e:
-    print(f"scikit-optimize error: {e}")
+    SKOPT_STATUS = f"scikit-optimize error: {e}"
     SKOPT_AVAILABLE = False
 
 try:
@@ -61,7 +63,7 @@ try:
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
-    print("Warning: scipy not available. Brent method will not work.")
+    SKOPT_STATUS += "\nWarning: scipy not available. Brent method will not work."
 
 
 def read_route_line(lines):
@@ -128,6 +130,122 @@ def run_mode_of(config):
     if mode not in RUN_MODES:
         raise ValueError(f"mode は {' / '.join(RUN_MODES)} のいずれかにしてください（現在: {mode}）")
     return mode
+
+
+def resolve_beta(opt, route_line):
+    """βの設定（優先順位: YAML > gjfのIOp(3/119,3/120) > 汎関数のデフォルト）
+
+    Returns: (beta_mode, beta_constraint, fixed_beta, from_gjf)
+    """
+    mode = opt.get('beta_mode') or 'default'
+    if mode == 'default':
+        gjf_beta = IOPParser.extract_beta(route_line)
+        if gjf_beta is not None:
+            return 'fixed', None, gjf_beta, True
+    return mode, opt.get('beta_constraint'), opt.get('fixed_beta'), False
+
+
+def _constraint_value(opt, beta_constraint):
+    """beta_constraint の C（solvent なら 1/ε）"""
+    if isinstance(beta_constraint, str) and beta_constraint.lower() == 'solvent':
+        return 1.0 / float(opt.get('epsilon', 1.0))
+    return float(beta_constraint)
+
+
+# 1次元の最適化の収束判定: 最小値を挟む3点の放物線から予測されるJの改善がこれ未満なら、
+# 頂点を1点だけ計算して終了する（最小値の近くのJには 1e-5 eV² 程度の数値的な揺らぎがあり、
+# それ以上絞り込んでも ω は丸めの桁の範囲でしか変わらない）
+PARABOLA_J_GAIN_TOL = 1e-6      # eV²
+PARABOLA_MAX_WIDTH = 0.02       # 放物線を信用する、挟み込みの幅の上限
+
+
+def parabola_step(pts, digits):
+    """評価済みの点 {x: J} から、最小値を挟む3点の放物線の頂点を求める
+
+    Returns: (頂点（丸めた値）, 挟み込みの幅, 予測されるJの改善) / 挟めていなければ None
+    """
+    xs = sorted(pts)
+    if len(xs) < 3:
+        return None
+    k = min(range(len(xs)), key=lambda i: pts[xs[i]])
+    if k == 0 or k == len(xs) - 1:
+        return None
+    x0, x1, x2 = xs[k - 1], xs[k], xs[k + 1]
+    y0, y1, y2 = pts[x0], pts[x1], pts[x2]
+    denom = (x1 - x0) * (y1 - y2) - (x1 - x2) * (y1 - y0)
+    if denom == 0:
+        return None
+    v = x1 - 0.5 * ((x1 - x0) ** 2 * (y1 - y2) - (x1 - x2) ** 2 * (y1 - y0)) / denom
+    # 3点を通る放物線の、頂点での値
+    a = ((y2 - y1) / (x2 - x1) - (y1 - y0) / (x1 - x0)) / (x2 - x0)
+    if a <= 0 or not (x0 < v < x2):
+        return None
+    gain = a * (v - x1) ** 2
+    return round(v, digits), x2 - x0, gain
+
+
+def check_alpha_beta(config, gjf_file):
+    """α を汎関数のデフォルトから変えるときの β の設定を、計算を始める前に確認する
+
+    長距離のHF交換の割合は α + β で、1 を超えると長距離のDFT交換が負になる。
+    Gaussian では α と β が独立に扱われるので、α だけ変えて β を汎関数のデフォルトの
+    ままにすると、α + β が 1 を超えることがある（例: LC-BLYP は α = 0, β = 1）。
+    そこで、α を指定・最適化するときは β の指定（constraint / fixed、または gjf の IOp）を必須にする。
+
+    問題があれば ValueError。Returns: 表示する注意のリスト
+    """
+    opt = config.get('optimization') or {}
+    run_mode = run_mode_of(config)
+    with open(gjf_file, 'r') as f:
+        route = read_route_line(f.readlines())
+    _, gjf_alpha = IOPParser.extract_iop_parameters(route)
+    beta_mode, beta_constraint, fixed_beta, from_gjf = resolve_beta(opt, route)
+    if beta_mode not in ('default', 'constraint', 'fixed'):
+        raise ValueError(f"beta_mode は default / constraint / fixed のいずれかにしてください（現在: {beta_mode}）")
+
+    alpha_opt = run_mode != 'j_only' and opt.get('optimization_mode', 'omega_only') in ('alpha_only', 'omega_alpha')
+    alpha = None
+    if not alpha_opt:
+        alpha = opt.get('fixed_alpha') if opt.get('fixed_alpha') is not None else gjf_alpha
+
+    notes = []
+    if not alpha_opt and alpha is None:
+        if beta_mode != 'default':
+            src = "gjf の β の IOp(3/119,3/120)" if from_gjf else "YAML の β の設定"
+            notes.append(f"注意: α が汎関数のデフォルトのままなので、{src}は使われません（β も汎関数のデフォルト）")
+        return notes
+
+    what = "α を最適化する" if alpha_opt else f"α = {alpha} を指定する"
+    if beta_mode == 'default':
+        raise ValueError(
+            f"{what}ときは、β も指定してください（beta_mode: constraint または fixed）。\n"
+            "  長距離の HF 交換の割合は α + β で、1 以下である必要があります。Gaussian では α と β が\n"
+            "  独立に扱われるため、β を汎関数のデフォルトのままにすると α + β が 1 を超えることがあります\n"
+            "  （例: LC-BLYP は β = 1 なので、α = 0.15 にすると α + β = 1.15）。\n"
+            "  気相で長距離を正しく −1/r にする場合:  beta_mode: constraint,  beta_constraint: 1.0（α + β = 1）")
+
+    if beta_mode == 'fixed':
+        if fixed_beta is None:
+            raise ValueError("beta_mode: fixed のときは fixed_beta を指定してください")
+        fixed_beta = float(fixed_beta)
+        if alpha_opt:
+            alpha_min = float(opt.get('alpha_min', 0.0))
+            if 1.0 - fixed_beta <= alpha_min:
+                raise ValueError(f"β = {fixed_beta} では α + β ≤ 1 となる α が探索範囲（alpha_min = {alpha_min} 以上）にありません")
+        elif float(alpha) + fixed_beta > 1.0 + 1e-9:
+            src = "（β は gjf の IOp から）" if from_gjf else ""
+            raise ValueError(f"α + β = {alpha} + {fixed_beta} = {float(alpha) + fixed_beta:g} が 1 を超えています{src}。"
+                             "長距離の DFT 交換が負になるので、α または β を見直してください")
+
+    if beta_mode == 'constraint':
+        if beta_constraint is None:
+            raise ValueError("beta_mode: constraint のときは beta_constraint（数値 C、または solvent）を指定してください")
+        C = _constraint_value(opt, beta_constraint)
+        if not (0 < C <= 1.0):
+            raise ValueError(f"beta_constraint（C）は 0 < C ≤ 1 にしてください（現在: {C:g}）")
+        if not alpha_opt and float(alpha) > C + 1e-9:
+            raise ValueError(f"α = {alpha} が C = {C:g} を超えています（β = C − α が負になります）")
+    return notes
 
 
 def state_nprocs(config):
@@ -1079,8 +1197,12 @@ class OmegaOptimizer:
         # gjfファイルからIOPパラメータを抽出
         self.gjf_omega, self.gjf_alpha = self.extract_gjf_parameters()
         
-        # j_only: YAMLでβを指定していなければ、gjfのβのIOpを使う
-        if self.run_mode == 'j_only' and self.beta_mode == 'default':
+        # α を変えるときの β の確認（β が汎関数のデフォルトのままなら停止、α + β ≤ 1）
+        for note in check_alpha_beta(self.config, self.config['molecule']['gjf_file']):
+            print(note)
+        
+        # YAMLでβを指定していなければ、gjfのβのIOpを使う（優先順位: yaml > gjf > default）
+        if self.beta_mode == 'default':
             gjf_beta = self.extract_gjf_beta()
             if gjf_beta is not None:
                 self.beta_mode = 'fixed'
@@ -1090,21 +1212,19 @@ class OmegaOptimizer:
         # パラメータの決定（優先順位: yaml > gjf > default）
         self.omega_value, self.alpha_value = self.determine_parameters()
         
-        # αの最大値の調整（beta_constraint='solvent'の場合のみε依存の制約を適用）
+        # αの最大値の調整: constraint なら α ≤ C（β ≥ 0）、fixed なら α ≤ 1 − β（α + β ≤ 1）
         original_alpha_max = self.config.get('optimization', {}).get('alpha_max')
-        
-        if self._is_solvent_constraint():
-            epsilon_max = 1.0 / self.epsilon
-            if original_alpha_max is None:
-                self.alpha_max = epsilon_max
-            else:
-                self.alpha_max = min(original_alpha_max, epsilon_max)
+        self.alpha_max = 1.0 if original_alpha_max is None else float(original_alpha_max)
+        if self.beta_mode == 'constraint' and self.beta_constraint is not None:
+            limit = _constraint_value(self.config.get('optimization', {}), self.beta_constraint)
+        elif self.beta_mode == 'fixed' and self.fixed_beta is not None:
+            limit = round(1.0 - float(self.fixed_beta), self.omega_digits)
         else:
-            # beta_constraint='solvent'以外の場合は、εによる制約なし
-            if original_alpha_max is None:
-                self.alpha_max = 1.0  # デフォルト値
-            else:
-                self.alpha_max = original_alpha_max
+            limit = None
+        if limit is not None and self.alpha_max > limit:
+            if self.optimization_mode in ('alpha_only', 'omega_alpha') and original_alpha_max is not None:
+                print(f"αの探索範囲の上限を {original_alpha_max} → {limit:g} にしました（{self._beta_description()}）")
+            self.alpha_max = limit
         
         self.config['optimization']['alpha_max'] = self.alpha_max
         
@@ -2176,7 +2296,8 @@ class OmegaOptimizer:
         # ヘッダー表示
         self._print_1d_optimization_header('Brent法', params, {
             '最大反復': max_iter,
-            '許容誤差': tolerance
+            '許容誤差': tolerance,
+            '収束判定': f'放物線で予測される J の改善 < {PARABOLA_J_GAIN_TOL:g} eV²'
         })
         
         # 連続同一値判定用の変数
@@ -2199,10 +2320,24 @@ class OmegaOptimizer:
             
             try:
                 # 計算済みの点はobjective_function内のキャッシュで処理される
-                return self.objective_function([param_rounded])
+                value = self.objective_function([param_rounded])
             except StopIteration:
                 raise ValueError("Early termination due to J threshold")
+            
+            # 放物線による収束判定（最小値を挟めていて、Jの改善がもう見込めなければ終了）
+            pts[param_rounded] = value
+            step = parabola_step(pts, self.omega_digits)
+            if step and step[1] <= PARABOLA_MAX_WIDTH and step[2] < PARABOLA_J_GAIN_TOL:
+                vertex = step[0]
+                if vertex not in pts and params['param_min'] <= vertex <= params['param_max']:
+                    try:
+                        pts[vertex] = self.objective_function([vertex])
+                    except StopIteration:
+                        raise ValueError("Early termination due to J threshold")
+                raise ValueError("Converged by parabola")
+            return value
         
+        pts = {}  # このBrent法で評価した点 {パラメーター: J}
         extra_info = {}
         
         try:
@@ -2226,6 +2361,8 @@ class OmegaOptimizer:
                 print(f"\n最適化が早期終了しました（J値が閾値以下）")
             elif "Convergence detected" in error_msg:
                 print(f"\n最適化が収束しました（これ以上の探索点なし）")
+            elif "Converged by parabola" in error_msg:
+                print(f"\n最適化が収束しました（放物線で予測される J の改善が {PARABOLA_J_GAIN_TOL:g} eV² 未満）")
             else:
                 raise e
             optimal_param = self.best_omega if self.optimization_mode == 'omega_only' else self.best_alpha
@@ -2645,7 +2782,15 @@ def submit_optimization_job(config_file, prepare_only=False):
     if not Path(gjf_file).exists():
         print(f"エラー: gjfファイルが見つかりません: {gjf_file}（gjfのあるフォルダで実行してください）")
         sys.exit(1)
-    
+
+    # α を変えるときの β の確認（投入する前に止める）
+    try:
+        for note in check_alpha_beta(config, gjf_file):
+            print(note)
+    except ValueError as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+
     try:
         mode = run_mode_of(config)
     except ValueError as e:
@@ -2780,7 +2925,9 @@ def main():
     if args.create_config:
         create_sample_config()
         return
-    
+
+    print(SKOPT_STATUS)
+
     if args.submit or args.prepare_only:
         if not args.config:
             print("エラー: --submit には --config が必要です")
@@ -2800,7 +2947,13 @@ def main():
                 # iterative_RCCS が import するこのモジュールを、実行中のものと同一にする（二重読み込みを防ぐ）
                 sys.modules.setdefault('param_opt_RCCS', sys.modules[__name__])
                 import iterative_RCCS
-                iterative_RCCS.run_iterative(args.config, launcher='direct' if args.in_job else 'g16sub')
+                try:
+                    runner = iterative_RCCS.IterativeOptimizer(
+                        args.config, launcher='direct' if args.in_job else 'g16sub')
+                except ValueError as e:   # 設定の誤り
+                    print(f"エラー: {e}")
+                    sys.exit(1)
+                runner.run()
             except Exception as e:
                 print(f"反復モードの実行中にエラーが発生しました: {e}")
                 import traceback
@@ -2808,10 +2961,14 @@ def main():
                 sys.exit(1)
             return
     
-    # 設定の準備
+    # 設定の準備（設定の誤りは、トレースバックではなくメッセージで知らせる）
     if args.config:
         overrides = {'calculation.launcher': 'direct'} if args.in_job else {}
-        optimizer = OmegaOptimizer(args.config, **overrides)
+        try:
+            optimizer = OmegaOptimizer(args.config, **overrides)
+        except ValueError as e:
+            print(f"エラー: {e}")
+            sys.exit(1)
     else:
         if not args.gjf:
             print("エラー: --gjf または --config が必要です")
@@ -2834,7 +2991,11 @@ def main():
         if args.fixed_alpha is not None:
             config_kwargs['optimization.fixed_alpha'] = args.fixed_alpha
             
-        optimizer = OmegaOptimizer(**config_kwargs)
+        try:
+            optimizer = OmegaOptimizer(**config_kwargs)
+        except ValueError as e:
+            print(f"エラー: {e}")
+            sys.exit(1)
     
     # 最適化の実行
     try:

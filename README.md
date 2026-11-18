@@ -24,7 +24,7 @@ EA の条件には、中性分子の LUMO ではなくアニオンの HOMO を�
 
 - **3 つの最適化モード**：ω のみ（`omega_only`）／α のみ（`alpha_only`）／ω と α を同時に（`omega_alpha`）
 - **5 つの最適化アルゴリズム**：`brent`（1 次元で推奨）、`golden_section`、`grid`、`adaptive_grid`、`bayesian`
-- **β の 3 つの扱い**：汎関数のデフォルト（`default`）、α + β = C の制約（`constraint`、C = 1/ε も可）、固定値（`fixed`）
+- **β の 3 つの扱い**：汎関数のデフォルト（`default`）、α + β = C の制約（`constraint`、C = 1/ε も可）、固定値（`fixed`）。α を変えるときは β の指定が必須で、α + β ≤ 1 を計算の前に確認
 - **汎関数のデフォルトを尊重**：α・β を指定しなければ IOp を書き込まず、汎関数本来の値で計算
 - **Guess=Read による高速化**：2 回目以降の試行では、各状態の前回の chk を `%oldchk` + `Guess=Read` で読み込む
 - **1 本のジョブで最適化全体を実行**（`--submit`）：フロントエンドで待機せず、キュー待ちも最初の 1 回だけ
@@ -247,6 +247,26 @@ C     1.396000     0.000000     0.000000
 
 `optimization_algorithm` を省略すると、1 次元のモードでは `brent`、`omega_alpha` では `bayesian` になります。
 
+Brent 法は、最小値を挟む 3 点の放物線から予測される J の改善が 1e-6 eV² 未満になったら、頂点を 1 点だけ計算して終了します。最小値の近くの J には 1e-5 eV² 程度の数値的な揺らぎがあり、それ以上絞り込んでも ω は丸めの桁の範囲でしか変わらないためです。
+
+### α を変えるときの β
+
+長距離の HF 交換の割合は α + β で、**1 以下**である必要があります（1 を超えると長距離の DFT 交換が負になります）。気相で長距離を正しく −1/r にするなら α + β = 1、誘電遮蔽（SRSH）なら α + β = 1/ε です。
+
+Gaussian では α（`IOp(3/130,3/131)`）と β（`IOp(3/119,3/120)`）が独立に扱われるので、α だけ変えて β を汎関数のデフォルトのままにすると、α + β が 1 を超えることがあります（例：LC-BLYP は α = 0、β = 1 なので、α = 0.15 にすると α + β = 1.15）。
+そこで、**α を指定するとき（`fixed_alpha` または gjf の IOp）や α を最適化するときは、β の指定が必須**です。`beta_mode: default` のままだと、計算を始める前（`--submit` なら投入する前）にエラーで止まります。
+
+```yaml
+optimization:
+  fixed_alpha: 0.2
+  beta_mode: constraint      # α + β = 1（β = 0.8）
+  beta_constraint: 1.0
+```
+
+- `beta_mode: fixed` で α + β > 1 になる場合もエラーになります。
+- β は gjf の `IOp(3/119,3/120)` に書いても指定できます（`beta_mode: default` のとき）。
+- α を最適化するときは、`alpha_max` を `constraint` なら C、`fixed` なら 1 − β までに自動で制限します。
+
 ## J 値の計算のみ（mode: j_only）
 
 最適化はせずに、決まったパラメーターで q0 / q1 / qm1 を 1 回ずつ計算し、J 値を求めます。最適化した ω の確認や、別の基底関数・構造での J 値の比較に使えます。
@@ -263,7 +283,7 @@ optimization:
 ```
 
 - パラメーターの優先順位は「YAML の `fixed_omega` / `fixed_alpha` / β の設定 > gjf の IOp > 汎関数のデフォルト」です。gjf のルート行に IOp を書いておけば、YAML には何も書かなくてかまいません。
-- β は gjf の `IOp(3/119=…,3/120=…)` も読み取ります（YAML の `beta_mode` が `default` のとき）。
+- β は gjf の `IOp(3/119=…,3/120=…)` も読み取ります（YAML の `beta_mode` が `default` のとき。他のモードでも同じです）。
 - 結果は `<name>_j_only_results.txt` に出力されます（各状態の全エネルギー、IP、EA、HOMO、HOMO + IP、HOMO + EA、J）。`--submit`（`ot-g16sub`）のときのログは `<name>_j_only.log` です。
 - ω・α・β は小数点以下 4 桁で扱います（`omega_digits` で変更可）。
 
@@ -276,10 +296,10 @@ optimization:
 反復 N:
   [Step2] OT → ω_N                          判定A: |ω_N − ω_{N−1}| < omega_threshold
   [Step3] ω_N で構造最適化                    判定B: RMSD < rmsd_threshold かつ 最大変位 < max_displacement_threshold
-  [Step4] 新しい構造・ω_N で J を計算          判定C: |J(新しい構造) − J(前の構造)| < j_threshold
+  [Step4] 新しい構造・ω_N で J を計算          判定C: |J(新しい構造) − J(前の構造)| < j_threshold（既定では使わない）
 ```
 
-A・B・C のどれか 1 つを満たした時点で終了します。設定例は [`examples/config_iterative.yaml`](examples/config_iterative.yaml) です。
+A・B・C のどれか 1 つを満たした時点で終了します。判定B などで、OT のあとに構造が変わったまま終わった場合は、最終構造・最終 ω の J を 1 点計算して確認します（`final_check/`、まとめの表の `J(new geom)`）。設定例は [`examples/config_iterative.yaml`](examples/config_iterative.yaml) です。
 
 ```yaml
 mode: iterative
@@ -298,7 +318,7 @@ iteration:
   omega_threshold: 0.001         # 判定A（bohr⁻¹）
   rmsd_threshold: 0.01           # 判定B（Å）
   max_displacement_threshold: 0.02
-  j_threshold: 0.001             # 判定C（eV²）
+  j_threshold: null              # 判定C（eV²）。既定では使わない
 ```
 
 | 項目（`iteration.`） | 内容（既定値） |
@@ -306,13 +326,15 @@ iteration:
 | `initial_optimization` | 最初に gjf の条件（gjf の ω、なければ汎関数のデフォルト）で構造最適化する（`false`） |
 | `max_iterations` | 反復の最大回数。達したら「収束していません」として終了（`5`） |
 | `omega_threshold` | 判定A：前の反復との ω の差（`0.001`） |
-| `rmsd_threshold`, `max_displacement_threshold` | 判定B：前の構造との RMSD と原子の最大変位（Å、重ね合わせ後。両方を満たしたとき）（`0.01`, `0.02`） |
-| `j_threshold` | 判定C：構造が変わったことによる J の変化（eV²）（`0.001`） |
+| `rmsd_threshold`, `max_displacement_threshold` | 判定B：前の構造との RMSD と原子の最大変位（Å、重ね合わせ後。指定した方をすべて満たしたとき）（`0.01`, `0.02`） |
+| `j_threshold` | 判定C：構造が変わったことによる J の変化（eV²）（`null` = 使わない） |
 | `search_range` | 2 回目以降の OT の探索幅：前回の ω ± この幅（`0.02`） |
 | `opt_keyword` | 構造最適化のキーワード（例：`'Opt=(CalcFC,MaxCycles=200)'`）（`Opt`） |
 | `final_optimization` | 判定A で終わったとき、最終の ω でもう一度構造最適化する（`false`） |
 
 判定の閾値を `0` または `null` にすると、その判定は使いません。
+
+**判定C を既定で使わない理由**：最小値の近くでは J ≈ J_min + k(Δω)² なので、ΔJ に当たる Δω は √(ΔJ/k) で、曲率 k は系によって大きく変わります（例：ベンゼン k ≈ 30、O4IPL k ≈ 55 eV²·bohr²）。そのため eV² の閾値の意味が系ごとに変わり、`j_threshold: 0.001` は判定A（`0.001`）の数倍の Δω を許してしまいます。また 1 点の ΔJ だけでは、ω がずれたのか J_min 自体が変わったのかを区別できません。Step4 では参考として、直前の OT の曲率から見積もった Δω をログに表示します。
 
 - **基底関数・汎関数**：gjf の記述をそのまま使います（Gen / GenECP の指定も引き継ぎます）。OT と構造最適化で同じものが使われます。gjf のルート行の `Opt` / `Freq` は取り除かれ、構造最適化のステップでだけ `opt_keyword` が付きます。
 - **対応するモード**：`optimization_mode: omega_only` のみです。α・β は全反復で固定です（優先順位は「YAML > gjf の IOp > 汎関数のデフォルト」）。
@@ -321,7 +343,7 @@ iteration:
 - **コア数**：OT は通常と同じく 3 状態を同時に計算し、構造最適化はジョブ全体のコア（例：8 × 3 = 24）で 1 本計算します。
 - **ω の振動**：ω が 2 つの値を行き来している（ω_N ≈ ω_{N−2}）場合は、収束していないものとして停止します。
 - **中断と再開**：同じフォルダで同じコマンド（`ot-g16sub config_iterative.yaml`）を実行すると、終わっている OT の点・構造最適化を読み込んで続きから再開します。途中で終わった構造最適化は、最後の構造から計算し直します。`use_existing_outputs` を書き換える必要はありません。
-- **ファイル**：各ステップは `iter0_opt/`、`iter1_ot/`、`iter1_opt/`、`iter2_ot/`、… のフォルダで計算されます（`final_optimization` は `final_opt/`）。再開と Guess=Read に使うため、`keep_files` は使わず、計算ファイルはすべて残します。
+- **ファイル**：各ステップは `iter0_opt/`、`iter1_ot/`、`iter1_opt/`、`iter2_ot/`、… のフォルダで計算されます（`final_optimization` は `final_opt/`、最終構造での J の確認は `final_check/`）。再開と Guess=Read に使うため、`keep_files` は使わず、計算ファイルはすべて残します。
 - **出力**：
   - `<name>_iterative_summary.txt`（`.json`）：各反復の ω、J、Step4 の J、Δω、RMSD、最大変位、構造最適化のエネルギー
   - `<name>_iterative.png`：ω と RMSD の推移

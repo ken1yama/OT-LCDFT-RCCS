@@ -32,6 +32,7 @@ optimization:
   max_parallel_jobs: 3         # q0, q1, qm1 を同時に計算
 
   # ---- α・β（null / default なら汎関数のデフォルトのまま）----
+  # ※ fixed_alpha を指定するときは β も指定する（例: beta_mode: constraint, beta_constraint: 1.0 で α + β = 1）
   fixed_alpha: null            # 例: 0.2
   beta_mode: default           # default / constraint（α+β=C）/ fixed
   beta_constraint: null        # constraint のとき: 数値 C、または solvent（C = 1/ε）
