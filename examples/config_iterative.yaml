@@ -6,14 +6,15 @@
 # ωの最適チューニング（OT）と、その ω での構造最適化を、ωと構造が
 # 互いに整合するまで繰り返す。全体が1本のジョブで実行される。
 #
-#   [Step1]（任意）最初の構造最適化            initial_optimization: true
-#   反復 N:
-#     [Step2] OT → ω_N                        判定A: |ω_N − ω_{N−1}| < omega_threshold
-#     [Step3] ω_N で構造最適化                  判定B: RMSD < rmsd_threshold かつ
-#                                                      最大変位 < max_displacement_threshold
-#     [Step4] 新しい構造・ω_N で J を計算        判定C: |J(新しい構造) − J(前の構造)| < j_threshold（既定では使わない）
-#   A・B・C のどれか1つを満たした時点で終了する。判定B などで終わったときは、最終構造での J を1点計算して確認する。
+#   （任意）最初の構造最適化                initial_optimization: true
+#   反復 n:
+#     [OT] 現在の構造で OT → ω_n           |ω_n − ω_{n−1}| < omega_threshold なら終了
+#     [構造最適化] ω_n で構造最適化         構造が変わらなければ終了（OT をしても ω は同じ）
 #
+#   終了したときの (ω, 構造) は、「構造はその ω（との差が omega_threshold 未満）で最適化されている」
+#   かつ「その構造で OT すると、その ω になる」を満たす。判定は |Δω| の1つだけ。
+#
+# - 2回目以降の OT は、前回の OT の結果から最小値の位置を予測して絞り込むので、2〜3点で終わる
 # - 汎関数・基底関数（Gen/GenECP を含む）・%mem・その他のキーワードは gjf の記述をそのまま使う
 #   （gjf の Opt / Freq は取り除かれ、構造最適化のステップでだけ opt_keyword が付く）
 # - optimization_mode は omega_only のみ。α・β は全反復で固定（優先順位: YAML > gjf の IOp > 汎関数のデフォルト）
@@ -43,7 +44,7 @@ optimization:
   optimization_algorithm: brent
   omega_min: 0.12
   omega_max: 0.5
-  omega_digits: 4              # 小数点以下の桁数（2〜4）。判定Aの閾値より細かくしておく
+  omega_digits: 4              # 小数点以下の桁数（2〜4）。omega_threshold より細かくしておく
   n_calls: 15
   max_parallel_jobs: 3
 
@@ -56,19 +57,13 @@ optimization:
   # ※ iterative では keep_files は使わず、計算ファイルはすべて残す（再開と Guess=Read に使うため）
 
 iteration:
+  omega_threshold: 0.001       # 収束の判定: |Δω|（bohr⁻¹）。論文で報告する桁（多くは小数点以下2桁）より細かければ十分
+                               # （omega_digits の丸めの幅 0.0001 の数倍以上にする）
+  max_iterations: 5            # 反復の最大回数（ふつうは2〜3回で収束する。達したら「収束していません」として終了）
   initial_optimization: false  # true: 最初に gjf の条件（gjf の ω、なければ汎関数のデフォルト）で構造最適化する
-  max_iterations: 5            # 反復の最大回数（達したら「収束していません」として終了）
-
-  # ---- 終了の判定（0 または null にすると、その判定は使わない）----
-  omega_threshold: 0.001       # 判定A: |Δω|（bohr⁻¹）
-  rmsd_threshold: 0.01         # 判定B: 前の構造との RMSD（Å、重ね合わせ後）
-  max_displacement_threshold: 0.02  # 判定B: 原子の最大変位（Å）。RMSD と両方を満たしたとき
-  j_threshold: null            # 判定C: 構造が変わったことによる J の変化（eV²）。既定では使わない
-                               # （ΔJ に当たる Δω は J の曲線の曲率で決まり、系によって変わるため。
-                               #   Step4 では参考として、曲率から見積もった Δω をログに表示する）
-
-  search_range: 0.02           # 2回目以降のOT: 前回の ω の両側を調べる幅の上限
-                               # （まず Δω の見積もりの3倍（0.005以上、見積もりがなければ0.01）で調べ、
-                               #   挟めなければこの幅、それでもだめなら omega_min〜omega_max で探索し直す）
+                               # （ふつうは不要。gjf の構造が手で組んだものなど、大きく崩れているときに使う）
+  search_range: 0.02           # 2回目以降のOT: 予測した ω が前回の ω ± この幅を超えるときは、予測を使わずに
+                               # 挟み込みで探索する（それでも挟めなければ omega_min〜omega_max で探索し直す）
   opt_keyword: Opt             # 構造最適化のキーワード（例: 'Opt=(CalcFC,MaxCycles=200)'）
-  final_optimization: false    # true: 判定Aで終わったとき、最終の ω でもう一度構造最適化する
+  # ※ 以前の rmsd_threshold, max_displacement_threshold, j_threshold, final_optimization は使わなくなった
+  #   （書いてあっても無視される）
