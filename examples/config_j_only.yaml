@@ -1,10 +1,10 @@
 # =====================================================================
-# param_opt_RCCS.py J値の計算のみ（mode: j_only）
+# param_opt_RCCS.py J²値の計算のみ（mode: j_only）
 #
 #   ot-g16sub config_j_only.yaml
 #
 # gjfの条件（汎関数・基底関数・構造）で q0 / q1 / qm1 を1回ずつ計算し、
-# IP・EA・HOMO・J値を <gjf名>_j_only_results.txt に出力する。
+# IP・EA・HOMO・J²値を <gjf名>_j_only_results.txt に出力する。
 #
 # パラメーター（ω, α, β）の優先順位: このYAMLの値 > gjfのIOp > 汎関数のデフォルト
 #   gjfに IOp(3/107,3/108)（ω）、IOp(3/130,3/131)（α）、IOp(3/119,3/120)（β）を

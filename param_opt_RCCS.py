@@ -15,7 +15,7 @@ HOMOエネルギーから J 値を最小化して ω（および α, β）を最
 - 2回目以降の試行では各状態(q0/q1/qm1)の前回chkを %oldchk + Guess=Read で再利用
 - use_existing_outputs: true で中断した最適化を再開（計算済みの点は再計算しない）
 
-- mode: j_only で、gjf（またはYAMLのfixed_*）のパラメーターでJ値を計算するだけのモード
+- mode: j_only で、gjf（またはYAMLのfixed_*）のパラメーターでJ²値を計算するだけのモード
 - mode: iterative で、OTと構造最適化をωと構造が整合するまで繰り返す（iterative_RCCS.py）
 
 Usage:
@@ -121,7 +121,7 @@ def parse_cpu_list(text):
 
 
 STATES = ('q0', 'q1', 'qm1')
-RUN_MODES = ('ot', 'j_only', 'iterative')  # ot: パラメーター最適化 / j_only: J値の計算のみ / iterative: OTと構造最適化の繰り返し
+RUN_MODES = ('ot', 'j_only', 'iterative')  # ot: パラメーター最適化 / j_only: J²値の計算のみ / iterative: OTと構造最適化の繰り返し
 
 
 def run_mode_of(config):
@@ -500,13 +500,13 @@ class GaussianResultParser:
 
 
 class JValueCalculator:
-    """J値計算を担当するクラス"""
+    """J²値計算を担当するクラス"""
     
     HARTREE_TO_EV = 27.2114
     
     @staticmethod
     def calculate_j_value(energies, homo_energy_q0, homo_energy_qm1):
-        """エネルギー辞書からJ値を計算（anionのHOMOを使用）"""
+        """エネルギー辞書からJ²値を計算（anionのHOMOを使用）"""
         ip_hartree = energies['q1'] - energies['q0']
         ea_hartree = energies['q0'] - energies['qm1']
         
@@ -515,7 +515,7 @@ class JValueCalculator:
         homo_ev_q0 = homo_energy_q0 * JValueCalculator.HARTREE_TO_EV
         homo_ev_qm1 = homo_energy_qm1 * JValueCalculator.HARTREE_TO_EV
         
-        # J値の計算: q0のHOMOとIP、qm1のHOMOとEAを比較
+        # J²値の計算: q0のHOMOとIP、qm1のHOMOとEAを比較
         j_value = (homo_ev_q0 + ip_ev)**2 + (homo_ev_qm1 + ea_ev)**2
         
         return {
@@ -1096,7 +1096,7 @@ class DeltaSCFCalculator:
         if homo_energy_q0 is None or homo_energy_qm1 is None:
             return None
         
-        # J値の計算
+        # J²値の計算
         j_results = JValueCalculator.calculate_j_value(energies, homo_energy_q0, homo_energy_qm1)
         
         results = {
@@ -1192,7 +1192,7 @@ class OmegaOptimizer:
         if self.run_mode == 'ot':
             print(f"\n選択された最適化アルゴリズム: {self.algorithm}")
         else:
-            print("\nモード: j_only（J値の計算のみ）")
+            print("\nモード: j_only（J²値の計算のみ）")
         
         # gjfファイルからIOPパラメータを抽出
         self.gjf_omega, self.gjf_alpha = self.extract_gjf_parameters()
@@ -1404,7 +1404,7 @@ class OmegaOptimizer:
             print(f"中断時点での最良ω: {omega_format.format(optimal_omega)}")
             if optimal_alpha is not None:
                 print(f"中断時点での最良α: {omega_format.format(optimal_alpha)}")
-            print(f"中断時点での最小J値: {optimal_j:.6f} eV²")
+            print(f"中断時点での最小J²値: {optimal_j:.6f} eV²")
             print(f"評価済み点数: {len(self.results_history)}")
             print(f"{'='*60}")
         else:
@@ -1802,7 +1802,7 @@ class OmegaOptimizer:
         
         Args:
             optimal_omega: 最適ω値
-            optimal_j: 最適J値
+            optimal_j: 最適J²値
             optimal_alpha: 最適α値
             method_name: 最適化手法名（表示用）
             extra_info: 追加で表示する情報のdict（キー: 表示名, 値: 値）
@@ -1832,7 +1832,7 @@ class OmegaOptimizer:
         if beta_value is not None:
             print(f"β: {beta_value:.{self.omega_digits}f}")
         
-        print(f"最小J値: {optimal_j:.6f} eV²")
+        print(f"最小J²値: {optimal_j:.6f} eV²")
         
         if extra_info:
             for name, value in extra_info.items():
@@ -1925,7 +1925,7 @@ class OmegaOptimizer:
             self.common_info_printed = True
     
     def objective_function(self, param):
-        """目的関数：指定されたパラメータでJ値を計算
+        """目的関数：指定されたパラメータでJ²値を計算
         
         計算済みの点（この実行中、または再開時に読み込んだ既存の.out）は再計算せずに
         キャッシュの値を返す。
@@ -1957,7 +1957,7 @@ class OmegaOptimizer:
             if key in self.existing_keys:
                 # 再開時：既存の計算結果を使用（初回のみ表示）し、そのchkを次のGuess=Readに使う
                 self.existing_keys.discard(key)
-                print(f"\n{label}: 既存の計算結果を使用 (J = {j_value:.6f} eV²)")
+                print(f"\n{label}: 既存の計算結果を使用 (J² = {j_value:.6f} eV²)")
                 self._register_existing_chk(omega, alpha)
             self._check_j_threshold(j_value)
             return j_value
@@ -1998,7 +1998,7 @@ class OmegaOptimizer:
         # 不要になったchkの削除（cleanup_chk有効時のみ）
         self._cleanup_chk()
         
-        print(f"  J値: {j_value:.6f} eV²")
+        print(f"  J²値: {j_value:.6f} eV²")
         print(f"  IP: {results['IP_eV']:.3f} eV, EA: {results['EA_eV']:.3f} eV")
         print(f"  E(HOMO_q0): {results['E_homo_q0_eV']:.3f} eV, E(HOMO_qm1): {results['E_homo_qm1_eV']:.3f} eV")
         
@@ -2011,7 +2011,7 @@ class OmegaOptimizer:
             best_label = f"ω = {fmt(self.best_omega)}, α = {fmt(self.best_alpha)}"
         else:
             best_label = f"ω = {fmt(self.best_omega)}"
-        print(f"  現在の最良: {best_label}, J = {self.best_j:.6f} eV²")
+        print(f"  現在の最良: {best_label}, J² = {self.best_j:.6f} eV²")
         
         self._check_j_threshold(j_value)
         return j_value
@@ -2046,14 +2046,14 @@ class OmegaOptimizer:
         )
     
     def run_j_only(self):
-        """mode: j_only — 決まったパラメーターで3状態を1回計算し、J値を出力する"""
+        """mode: j_only — 決まったパラメーターで3状態を1回計算し、J²値を出力する"""
         omega, alpha = self.omega_value, self.alpha_value
         fmt = lambda v: f"{v:.{self.omega_digits}f}" if v is not None else "Gaussianデフォルト"
         calc_info = self._make_calculator(omega, alpha)
         beta = calc_info.beta
         
         print("=" * 60)
-        print("J値の計算（mode: j_only）")
+        print("J²値の計算（mode: j_only）")
         print("=" * 60)
         print(f"分子: {self.config['molecule']['gjf_file']}")
         print(f"汎関数: {calc_info.method}")
@@ -2080,7 +2080,7 @@ class OmegaOptimizer:
         lines = [
             f"Executed Script: {os.path.basename(__file__)} (version {__version__})",
             "",
-            "J-value Calculation (mode: j_only)",
+            "J^2 Calculation (mode: j_only)",
             "=" * 50,
             f"Molecule: {self.config['molecule']['gjf_file']}",
             f"Method: {calc_info.method}",
@@ -2107,7 +2107,7 @@ class OmegaOptimizer:
             f"  HOMO(q0)  + IP              = {d_ip:+.4f}",
             f"  HOMO(qm1) + EA              = {d_ea:+.4f}",
             "",
-            f"J = (HOMO(q0) + IP)^2 + (HOMO(qm1) + EA)^2 = {results['J']:.6f} eV^2",
+            f"J^2 = (HOMO(q0) + IP)^2 + (HOMO(qm1) + EA)^2 = {results['J']:.6f} eV^2",
             "",
             "Output files: " + ", ".join(f"{n}.out" for n in self._job_names(omega, alpha).values()),
         ]
@@ -2117,19 +2117,19 @@ class OmegaOptimizer:
         print(f"\nIP = {results['IP_eV']:.4f} eV, EA = {results['EA_eV']:.4f} eV")
         print(f"HOMO(q0) = {results['E_homo_q0_eV']:.4f} eV, HOMO(qm1) = {results['E_homo_qm1_eV']:.4f} eV")
         print(f"HOMO(q0) + IP = {d_ip:+.4f} eV, HOMO(qm1) + EA = {d_ea:+.4f} eV")
-        print(f"J = {results['J']:.6f} eV²")
+        print(f"J² = {results['J']:.6f} eV²")
         print(f"\n結果を保存しました: {results_file}")
         return omega, results['J']
     
     def _check_j_threshold(self, j_value):
-        """J値が閾値以下なら早期終了（StopIteration）"""
+        """J²値が閾値以下なら早期終了（StopIteration）"""
         j_threshold = self.config['optimization'].get('j_threshold')
         if j_threshold is not None and j_value <= j_threshold:
-            print(f"\nJ値 ({j_value:.6f}) が閾値 ({j_threshold}) 以下になりました")
+            print(f"\nJ²値 ({j_value:.6f}) が閾値 ({j_threshold}) 以下になりました")
             raise StopIteration()
     
     def optimize(self):
-        """選択されたアルゴリズムで最適化を実行（mode: j_only ではJ値の計算のみ）"""
+        """選択されたアルゴリズムで最適化を実行（mode: j_only ではJ²値の計算のみ）"""
         if self.run_mode == 'j_only':
             return self.run_j_only()
         print(f"\n{'='*60}")
@@ -2297,7 +2297,7 @@ class OmegaOptimizer:
         self._print_1d_optimization_header('Brent法', params, {
             '最大反復': max_iter,
             '許容誤差': tolerance,
-            '収束判定': f'放物線で予測される J の改善 < {PARABOLA_J_GAIN_TOL:g} eV²'
+            '収束判定': f'放物線で予測される J² の改善 < {PARABOLA_J_GAIN_TOL:g} eV²'
         })
         
         # 連続同一値判定用の変数
@@ -2358,11 +2358,11 @@ class OmegaOptimizer:
         except ValueError as e:
             error_msg = str(e)
             if "Early termination" in error_msg:
-                print(f"\n最適化が早期終了しました（J値が閾値以下）")
+                print(f"\n最適化が早期終了しました（J²値が閾値以下）")
             elif "Convergence detected" in error_msg:
                 print(f"\n最適化が収束しました（これ以上の探索点なし）")
             elif "Converged by parabola" in error_msg:
-                print(f"\n最適化が収束しました（放物線で予測される J の改善が {PARABOLA_J_GAIN_TOL:g} eV² 未満）")
+                print(f"\n最適化が収束しました（放物線で予測される J² の改善が {PARABOLA_J_GAIN_TOL:g} eV² 未満）")
             else:
                 raise e
             optimal_param = self.best_omega if self.optimization_mode == 'omega_only' else self.best_alpha
@@ -2430,10 +2430,10 @@ class OmegaOptimizer:
                 iteration += 1
                 current_best = round(x1 if f1 < f2 else x2, self.omega_digits)
                 current_j = min(f1, f2)
-                print(f"  現在の最良: {params['param_name']} = {current_best:.{self.omega_digits}f}, J = {current_j:.6f}")
+                print(f"  現在の最良: {params['param_name']} = {current_best:.{self.omega_digits}f}, J² = {current_j:.6f}")
         
         except StopIteration:
-            print(f"\n最適化が早期終了しました（J値が閾値以下）")
+            print(f"\n最適化が早期終了しました（J²値が閾値以下）")
         
         # 結果の設定と終了処理
         optimal_param = self.best_omega if self.optimization_mode == 'omega_only' else self.best_alpha
@@ -2464,7 +2464,7 @@ class OmegaOptimizer:
                     print(f"\n[{i}/{n_points}] {params['param_name']} = {val_rounded:.{self.omega_digits}f}")
                     self.objective_function([val_rounded])
             except StopIteration:
-                print(f"\n最適化が早期終了しました（J値が閾値以下）")
+                print(f"\n最適化が早期終了しました（J²値が閾値以下）")
         
         elif self.optimization_mode == 'omega_alpha':
             n_omega = int(np.sqrt(n_points))
@@ -2494,7 +2494,7 @@ class OmegaOptimizer:
                               f"α = {alpha_rounded:.{self.omega_digits}f}")
                         self.objective_function([omega_rounded, alpha_rounded])
             except StopIteration:
-                print(f"\n最適化が早期終了しました（J値が閾値以下）")
+                print(f"\n最適化が早期終了しました（J²値が閾値以下）")
         
         # 終了処理
         self._finalize_optimization(self.best_omega, self.best_j, self.best_alpha, 'グリッドサーチ')
@@ -2531,7 +2531,7 @@ class OmegaOptimizer:
                 print(f"[{i}/{n_coarse}] {params['param_name']} = {param_rounded:.{self.omega_digits}f}")
                 self.objective_function([param_rounded])
         except StopIteration:
-            print(f"\n最適化が早期終了しました（J値が閾値以下）")
+            print(f"\n最適化が早期終了しました（J²値が閾値以下）")
             optimal_omega, optimal_alpha = self._set_optimal_params_by_mode(
                 self.best_omega if self.optimization_mode == 'omega_only' else self.best_alpha
             )
@@ -2541,7 +2541,7 @@ class OmegaOptimizer:
         # 最良点周辺を特定
         best_param = self.best_omega if self.optimization_mode == 'omega_only' else self.best_alpha
         
-        print(f"\n第1段階完了: 最良点 {params['param_name']} = {best_param:.{self.omega_digits}f}, J = {self.best_j:.6f}")
+        print(f"\n第1段階完了: 最良点 {params['param_name']} = {best_param:.{self.omega_digits}f}, J² = {self.best_j:.6f}")
         
         # 第2段階: 最良点周辺の細かいグリッド
         search_width = (params['param_max'] - params['param_min']) / (2 * n_coarse)
@@ -2561,7 +2561,7 @@ class OmegaOptimizer:
                 print(f"[{i}/{n_fine}] {params['param_name']} = {param_rounded:.{self.omega_digits}f}")
                 self.objective_function([param_rounded])
         except StopIteration:
-            print(f"\n最適化が早期終了しました（J値が閾値以下）")
+            print(f"\n最適化が早期終了しました（J²値が閾値以下）")
         
         # 終了処理
         optimal_omega, optimal_alpha = self._set_optimal_params_by_mode(
@@ -2583,7 +2583,7 @@ class OmegaOptimizer:
             f.write("Features:\n")
             f.write("  - Three optimization modes: omega_only, alpha_only, omega_alpha\n")
             f.write("  - Parameter priority: YAML > GJF IOP > Default\n")
-            f.write("  - Corrected J-value calculation using anion HOMO\n\n")
+            f.write("  - J^2 = (HOMO(q0) + IP)^2 + (HOMO(qm1) + EA)^2 (anion HOMO)\n\n")
             f.write(f"Molecule: {self.config['molecule']['gjf_file']}\n")
             f.write(f"Optimization mode: {self.optimization_mode}\n")
             
@@ -2629,12 +2629,12 @@ class OmegaOptimizer:
             if beta_value is not None:
                 f.write(f"Beta: {beta_value:.{self.omega_digits}f}\n")
             
-            f.write(f"Minimum J value: {optimal_j:.6f} eV²\n")
+            f.write(f"Minimum J^2: {optimal_j:.6f} eV²\n")
             f.write(f"Total evaluations: {len(self.results_history)}\n\n")
             
             f.write("Evaluation History:\n")
             f.write("-" * 80 + "\n")
-            f.write("Omega\t\tAlpha\t\tJ Value\t\tIP (eV)\t\tEA (eV)\t\tHOMO_q0 (eV)\tHOMO_qm1 (eV)\n")
+            f.write("Omega\t\tAlpha\t\tJ^2 (eV^2)\tIP (eV)\t\tEA (eV)\t\tHOMO_q0 (eV)\tHOMO_qm1 (eV)\n")
             
             for result in self.results_history:
                 omega_str = omega_format.format(result['omega']) if result['omega'] is not None else "default"
@@ -2681,15 +2681,15 @@ class OmegaOptimizer:
                 
                 if optimal_alpha is not None:
                     plt.scatter(optimal_omega, optimal_alpha, color='red', s=200, marker='*', 
-                               label=f'Optimal (ω={omega_format.format(optimal_omega)}, α={omega_format.format(optimal_alpha)}, J={optimal_j:.6f})', 
+                               label=f'Optimal (ω={omega_format.format(optimal_omega)}, α={omega_format.format(optimal_alpha)}, J²={optimal_j:.6f})', 
                                edgecolors='white', linewidth=2, zorder=5)
                 else:
                     plt.scatter(optimal_omega, 0, color='red', s=200, marker='*', 
-                               label=f'Optimal (ω={omega_format.format(optimal_omega)}, J={optimal_j:.6f})', 
+                               label=f'Optimal (ω={omega_format.format(optimal_omega)}, J²={optimal_j:.6f})', 
                                edgecolors='white', linewidth=2, zorder=5)
                 
                 cbar = plt.colorbar(scatter)
-                cbar.set_label('J value (eV²) - Log scale', fontsize=12)
+                cbar.set_label('J² (eV²) - Log scale', fontsize=12)
                 
                 plt.xlabel('ω (Range-separation parameter)', fontsize=12)
                 plt.ylabel('α (HF exchange parameter)', fontsize=12)
@@ -2730,11 +2730,11 @@ class OmegaOptimizer:
                 
                 if optimal_param is not None:
                     plt.scatter(optimal_param, optimal_j, color='red', s=150, marker='*', 
-                               label=f'Optimal point (J={optimal_j:.6f})', 
+                               label=f'Optimal point (J²={optimal_j:.6f})', 
                                edgecolors='black', linewidth=1)
                 
                 plt.xlabel(param_name, fontsize=12)
-                plt.ylabel('J value (eV²)', fontsize=12)
+                plt.ylabel('J² (eV²)', fontsize=12)
                 plt.title(f'{title_suffix} Results - {base_name}', fontsize=14, fontweight='bold')
                 plt.legend(fontsize=10)
                 plt.grid(True, alpha=0.3)
@@ -2899,7 +2899,7 @@ def submit_optimization_job(config_file, prepare_only=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='長距離補正汎関数のパラメーター（ω/α/β）をJ値最小化で最適化（RCCS / g16sub版）')
+        description='長距離補正汎関数のパラメーター（ω/α/β）をJ²値最小化で最適化（RCCS / g16sub版）')
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     parser.add_argument('--config', help='設定ファイルのパス')
     parser.add_argument('--gjf', help='gjfファイルのパス')

@@ -12,7 +12,7 @@
 # 他のモードの例はファイル末尾にあります。
 # =====================================================================
 
-# 実行モード: ot（パラメーター最適化、既定）/ j_only（J値の計算のみ。config_j_only.yaml を参照）
+# 実行モード: ot（パラメーター最適化、既定）/ j_only（J²値の計算のみ。config_j_only.yaml を参照）
 #           / iterative（OTと構造最適化の繰り返し。config_iterative.yaml を参照）
 mode: ot
 
@@ -58,7 +58,7 @@ optimization:
   # omega_alpha: ωとαを同時に最適化
   optimization_mode: omega_only
 
-  # brent          : 1次元専用。J値曲線が単峰なので最も効率的（推奨）
+  # brent          : 1次元専用。J²値曲線が単峰なので最も効率的（推奨）
   # golden_section : 1次元専用。黄金分割探索
   # grid           : 等間隔グリッド（omega_alphaでは √n_calls × √n_calls 点）
   # adaptive_grid  : 1次元専用。粗い探索 → 最良点の周辺を細かく探索
@@ -101,7 +101,7 @@ optimization:
   # ---- 評価回数と終了条件 ----
   # brent / golden_section: 最大反復回数、grid: 点数、bayesian: 新規の評価回数
   n_calls: 15
-  # J値（eV²）がこの値以下になったら終了。null なら使わない
+  # J²値（eV²）がこの値以下になったら終了。null なら使わない
   j_threshold: null
 
   # ---- ベイズ最適化のみで使用 ----

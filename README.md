@@ -1,21 +1,23 @@
 # OT-LCDFT-RCCS
 
-長距離補正（range-separated hybrid, LC）汎関数のパラメーター ω（および α, β）を、J 値の最小化によって系ごとに最適チューニング（optimal tuning, OT）する Python スクリプトです。
+長距離補正（range-separated hybrid, LC）汎関数のパラメーター ω（および α, β）を、J² 値の最小化によって系ごとに最適チューニング（optimal tuning, OT）する Python スクリプトです。
 分子科学研究所 計算科学研究センター（RCCS）のスーパーコンピューターで、`g16sub` により Gaussian 16 のジョブを自動投入して最適化を進めます。
 
-*English summary: A Python script for optimally tuning the range-separation parameter ω (and α, β) of long-range corrected DFT functionals by minimizing the J value with ΔSCF calculations in Gaussian 16. Jobs are submitted with `g16sub` on the RCCS supercomputer (Institute for Molecular Science, Japan).*
+*English summary: A Python script for optimally tuning the range-separation parameter ω (and α, β) of long-range corrected DFT functionals by minimizing J² (the sum of squared Koopmans-condition deviations) with ΔSCF calculations in Gaussian 16. Jobs are submitted with `g16sub` on the RCCS supercomputer (Institute for Molecular Science, Japan).*
 
 ---
 
 ## 概要
 
-各 ω（α）について、中性（N 電子）・カチオン（N−1 電子）・アニオン（N+1 電子）の 3 状態を ΔSCF 法で計算し、次の J 値を最小にするパラメーターを探索します。
+各 ω（α）について、中性（N 電子）・カチオン（N−1 電子）・アニオン（N+1 電子）の 3 状態を ΔSCF 法で計算し、次の J² 値を最小にするパラメーターを探索します。
 
 ```
-J = (ε_HOMO(N) + IP)² + (ε_HOMO(N+1) + EA)²
+J² = (ε_HOMO(N) + IP)² + (ε_HOMO(N+1) + EA)²
 IP = E(N−1) − E(N)
 EA = E(N)   − E(N+1)
 ```
+
+2 乗の和なので、文献（Stein, Kronik, Baer ら）の表記に合わせて J² と書きます（J は絶対値の和 |ε_HOMO(N) + IP| + |ε_HOMO(N+1) + EA| を表します）。単位は eV² です。
 
 EA の条件には、中性分子の LUMO ではなくアニオンの HOMO を用います。
 ファイル名では、3 つの状態を `q0`（中性）、`q1`（カチオン）、`qm1`（アニオン）と表します。
@@ -30,7 +32,7 @@ EA の条件には、中性分子の LUMO ではなくアニオンの HOMO を�
 - **1 本のジョブで最適化全体を実行**（`--submit`）：フロントエンドで待機せず、キュー待ちも最初の 1 回だけ
 - **3 状態の同時計算**：q0 / q1 / qm1 を、CPU を分けて同時に計算
 - **中断からの再開**：計算済みの点は再計算せずに最適化を続ける
-- **J 値の計算のみのモード**（`mode: j_only`）：gjf（または YAML）のパラメーターで 3 状態を 1 回計算し、IP・EA・HOMO・J を出力
+- **J² 値の計算のみのモード**（`mode: j_only`）：gjf（または YAML）のパラメーターで 3 状態を 1 回計算し、IP・EA・HOMO・J² を出力
 - **OT と構造最適化の繰り返し**（`mode: iterative`）：ω と構造が互いに整合するまで、OT と構造最適化を 1 本のジョブで繰り返す
 - **計算ファイルの整理**（任意）：完了後に、全部残す／最適点の .out・.chk だけ残す／全部消す、を選べる
 
@@ -120,7 +122,7 @@ rm -rf ~/OT-LCDFT-RCCS
 例は [`examples/`](examples/) にあります。
 
 - [`config_simple.yaml`](examples/config_simple.yaml)：ω のみを Brent 法で最適化する場合の簡易版（ふだんはこちら）
-- [`config_j_only.yaml`](examples/config_j_only.yaml)：J 値を計算するだけの場合（下の「J 値の計算のみ」を参照）
+- [`config_j_only.yaml`](examples/config_j_only.yaml)：J² 値を計算するだけの場合（下の「J² 値の計算のみ」を参照）
 - [`config_iterative.yaml`](examples/config_iterative.yaml)：OT と構造最適化を繰り返す場合（下の「OT と構造最適化の繰り返し」を参照）
 - [`config_example.yaml`](examples/config_example.yaml)：全項目をコメント付きで記載した完全版
 
@@ -221,7 +223,7 @@ C     1.396000     0.000000     0.000000
 
 | 項目 | 内容 |
 |---|---|
-| `mode` | `ot`（パラメーター最適化、既定）／`j_only`（J 値の計算のみ）／`iterative`（OT と構造最適化の繰り返し） |
+| `mode` | `ot`（パラメーター最適化、既定）／`j_only`（J² 値の計算のみ）／`iterative`（OT と構造最適化の繰り返し） |
 | `molecule.gjf_file` | 基準となる gjf ファイル |
 | `calculation.nproc_per_job` | 1 状態（1 計算）あたりのコア数 |
 | `calculation.nproc_per_state` | 状態ごとのコア数（例：`{q0: 12, q1: 18, qm1: 18}`。書いた状態だけ `nproc_per_job` より優先） |
@@ -239,7 +241,7 @@ C     1.396000     0.000000     0.000000
 | `optimization.beta_mode` | `default` / `constraint` / `fixed` |
 | `optimization.beta_constraint` | α + β = C の C（数値、または `solvent` で 1/ε） |
 | `optimization.n_calls` | 最大評価回数 |
-| `optimization.j_threshold` | J 値がこの値以下になったら終了 |
+| `optimization.j_threshold` | J² 値がこの値以下になったら終了 |
 | `optimization.max_parallel_jobs` | 3 状態を同時に計算する数（1 なら順番に、2 以上なら同時に） |
 | `optimization.use_guess_read` | 前回の chk を Guess=Read で読み込む |
 | `optimization.use_existing_outputs` | 既存の .out を読み込んで再開する |
@@ -247,7 +249,7 @@ C     1.396000     0.000000     0.000000
 
 `optimization_algorithm` を省略すると、1 次元のモードでは `brent`、`omega_alpha` では `bayesian` になります。
 
-Brent 法は、最小値を挟む 3 点の放物線から予測される J の改善が 1e-6 eV² 未満になったら、頂点を 1 点だけ計算して終了します。最小値の近くの J には 1e-5 eV² 程度の数値的な揺らぎがあり、それ以上絞り込んでも ω は丸めの桁の範囲でしか変わらないためです。
+Brent 法は、最小値を挟む 3 点の放物線から予測される J² の改善が 1e-6 eV² 未満になったら、頂点を 1 点だけ計算して終了します。最小値の近くの J² には 1e-5 eV² 程度の数値的な揺らぎがあり、それ以上絞り込んでも ω は丸めの桁の範囲でしか変わらないためです。
 
 ### α を変えるときの β
 
@@ -267,9 +269,9 @@ optimization:
 - β は gjf の `IOp(3/119,3/120)` に書いても指定できます（`beta_mode: default` のとき）。
 - α を最適化するときは、`alpha_max` を `constraint` なら C、`fixed` なら 1 − β までに自動で制限します。
 
-## J 値の計算のみ（mode: j_only）
+## J² 値の計算のみ（mode: j_only）
 
-最適化はせずに、決まったパラメーターで q0 / q1 / qm1 を 1 回ずつ計算し、J 値を求めます。最適化した ω の確認や、別の基底関数・構造での J 値の比較に使えます。
+最適化はせずに、決まったパラメーターで q0 / q1 / qm1 を 1 回ずつ計算し、J² 値を求めます。最適化した ω の確認や、別の基底関数・構造での J² 値の比較に使えます。
 
 ```yaml
 mode: j_only
@@ -284,7 +286,7 @@ optimization:
 
 - パラメーターの優先順位は「YAML の `fixed_omega` / `fixed_alpha` / β の設定 > gjf の IOp > 汎関数のデフォルト」です。gjf のルート行に IOp を書いておけば、YAML には何も書かなくてかまいません。
 - β は gjf の `IOp(3/119=…,3/120=…)` も読み取ります（YAML の `beta_mode` が `default` のとき。他のモードでも同じです）。
-- 結果は `<name>_j_only_results.txt` に出力されます（各状態の全エネルギー、IP、EA、HOMO、HOMO + IP、HOMO + EA、J）。`--submit`（`ot-g16sub`）のときのログは `<name>_j_only.log` です。
+- 結果は `<name>_j_only_results.txt` に出力されます（各状態の全エネルギー、IP、EA、HOMO、HOMO + IP、HOMO + EA、J²）。`--submit`（`ot-g16sub`）のときのログは `<name>_j_only.log` です。
 - ω・α・β は小数点以下 4 桁で扱います（`omega_digits` で変更可）。
 
 ## OT と構造最適化の繰り返し（mode: iterative）
@@ -334,7 +336,7 @@ iteration:
 
 ### 2 回目以降の OT：最小値の位置を予測する
 
-J = t₁² + t₂² です。ここで t₁ = ε_HOMO(N) + IP、t₂ = ε_HOMO(N+1) + EA です。t₁ と t₂ は、最小値の近くで ω にほぼ比例し、その傾き s₁、s₂ は構造によってほとんど変わりません。
+J² = t₁² + t₂² です。ここで t₁ = ε_HOMO(N) + IP、t₂ = ε_HOMO(N+1) + EA です。t₁ と t₂ は、最小値の近くで ω にほぼ比例し、その傾き s₁、s₂ は構造によってほとんど変わりません。
 
 そこで、前回の OT の点から傾きを求め、新しい構造で前回の ω の 1 点を計算して、最小値の位置を次の式で予測します（ガウス・ニュートン法）。
 
@@ -343,19 +345,19 @@ J = t₁² + t₂² です。ここで t₁ = ε_HOMO(N) + IP、t₂ = ε_HOMO(N
 予測した ω を計算し、そこで同じ予測を繰り返します。予測した点が丸めの桁（`omega_digits`）で動かなくなったら終了します。新しい構造の点の間隔が 0.001 以上になったら、傾きはその点から求め直します。ふつうは **2〜3 点**で終わります。
 
 - **予測の精度**：O4IPL（α = 0.15、β = 0.85）の実際の計算では、予測が Δω = −0.0023、実際の OT の結果が −0.0021 でした。
-- **予測が使えないとき**：傾きが求められない、予測した ω が ± `search_range` の外、予測した点で J が下がらない、のどれかに当たるときは、前回の ω の両側を計算して最小値を挟み込み、放物線補間で絞り込みます。それでも挟めなければ、`omega_min`〜`omega_max` で最初から探索し直します。
+- **予測が使えないとき**：傾きが求められない、予測した ω が ± `search_range` の外、予測した点で J² が下がらない、のどれかに当たるときは、前回の ω の両側を計算して最小値を挟み込み、放物線補間で絞り込みます。それでも挟めなければ、`omega_min`〜`omega_max` で最初から探索し直します。
 - **まとめの表**：`Pred` の列に予測した Δω、`dOmega` の列に実際の Δω を載せます。
 
 ### 判定を |Δω| の 1 つにした理由
 
-以前は、構造の変化（RMSD）と J の変化（ΔJ）でも終了できました。実際の計算で調べると、どちらも Δω が閾値を超えたまま終了していました。
+以前は、構造の変化（RMSD）と J² の変化（ΔJ²）でも終了できました。実際の計算で調べると、どちらも Δω が閾値を超えたまま終了していました。
 
-| 計算（O4IPL） | 構造の変化 | ΔJ（eV²） | Δω |
+| 計算（O4IPL） | 構造の変化 | ΔJ²（eV²） | Δω |
 |---|---|---|---|
 | α 0.15、β 0.85、反復 1→2 | RMSD 0.027 Å | 1.0×10⁻⁴ | −0.0021（実測） |
 | α 0.10、β 0.90、反復 1→2 | RMSD 0.009 Å | 2.5×10⁻⁵ | −0.0012（予測） |
 
-RMSD や ΔJ を Δω に換算する係数は、系やパラメーターによって変わります。そのため、どの閾値なら安全かを決められません。
+RMSD や ΔJ² を Δω に換算する係数は、系やパラメーターによって変わります。そのため、どの閾値なら安全かを決められません。
 
 一方、ω は構造にあまり敏感ではありません。O4IPL では、構造を ω = 0.47 で最適化したものから 0.206 で最適化したものに変えても、最適な ω は 0.0021 しか動きませんでした。1 回の反復で Δω は大きく縮むので、ふつうは 2〜3 回の反復で収束します。
 
@@ -370,7 +372,7 @@ RMSD や ΔJ を Δω に換算する係数は、系やパラメーターによ�
 - **中断と再開**：同じフォルダで同じコマンド（`ot-g16sub config_iterative.yaml`）を実行すると、終わっている OT の点と構造最適化を読み込んで、続きから再開します。途中で終わった構造最適化は、最後の構造から計算し直します。`use_existing_outputs` を書き換える必要はありません。収束しなかったときは、`max_iterations` を増やして再実行すれば続きから計算します。
 - **ファイル**：各ステップは `iter0_opt/`、`iter1_ot/`、`iter1_opt/`、`iter2_ot/`、… のフォルダで計算されます。再開と Guess=Read に使うため、`keep_files` は使わず、計算ファイルはすべて残します。
 - **出力**：
-  - `<name>_iterative_summary.txt`（`.json`）：結果（収束したか）、最終の ω と構造（どのフォルダの構造か）、各反復の ω、J、OT の点の数、Δω（実際と予測）、新しい構造での J、構造の変化（RMSD、最大変位）、構造最適化のエネルギーとステップ数
+  - `<name>_iterative_summary.txt`（`.json`）：結果（収束したか）、最終の ω と構造（どのフォルダの構造か）、各反復の ω、J²、OT の点の数、Δω（実際と予測）、新しい構造での J²、構造の変化（RMSD、最大変位）、構造最適化のエネルギーとステップ数
   - `<name>_iterative.png`：ω と |Δω| の推移
   - `<name>_OT_final.gjf`：最終構造・最終 ω の一点計算の入力（そのまま次の計算に使えます）
   - `<name>_iterative.log`：`--submit` のときの実行ログ
@@ -382,9 +384,9 @@ RMSD や ΔJ を Δω に換算する係数は、系やパラメーターによ�
 | ファイル | 内容 |
 |---|---|
 | `<name>_q0_w0.1700.gjf` / `.out` / `.chk` | 各状態・各 ω の Gaussian 入出力（α も最適化する場合は `_a0.2000` が付く） |
-| `<name>_optimization_results.txt` | 最適値と、全評価点の J 値・IP・EA・HOMO の一覧 |
+| `<name>_optimization_results.txt` | 最適値と、全評価点の J² 値・IP・EA・HOMO の一覧 |
 | `<name>_opt.log` | `--submit` のときの実行ログ |
-| `<name>_<mode>_optimization.png` | J 値のグラフ |
+| `<name>_<mode>_optimization.png` | J² 値のグラフ |
 
 ## 中断と再開
 

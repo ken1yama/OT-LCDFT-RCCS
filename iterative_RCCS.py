@@ -15,7 +15,7 @@ param_opt_RCCS.py から呼び出される（単独では実行しない）。
                                             （構造が同じなら OT の結果も同じなので、厳密に整合）
 
 - 1回目の OT は YAML のアルゴリズム（Brent法など）で全範囲を探索する
-- 2回目以降の OT: J = t1² + t2²（t1 = ε_HOMO(N) + IP, t2 = ε_HOMO(N+1) + EA）の t1, t2 は
+- 2回目以降の OT: J² = t1² + t2²（t1 = ε_HOMO(N) + IP, t2 = ε_HOMO(N+1) + EA）の t1, t2 は
   最小値の近くで ω にほぼ比例し、その傾き s1, s2 は構造によってほとんど変わらない。そこで、
   前回の OT の点から傾きを求め、新しい構造で前回の ω の1点を計算して、最小値の位置を
       Δω = −(t1·s1 + t2·s2) / (s1² + s2²)        （ガウス・ニュートン法）
@@ -57,7 +57,7 @@ GEOM_UNCHANGED = 1e-4
 
 
 def gn_step(t, s):
-    """J = t1² + t2² を最小にする ω のずれ（ガウス・ニュートン法）
+    """J² = t1² + t2² を最小にする ω のずれ（ガウス・ニュートン法）
 
     t = (t1, t2): 現在の点の値（eV）、s = (s1, s2): ω に対する傾き（eV·bohr）
     """
@@ -448,7 +448,7 @@ class IterativeOptimizer:
 
         予測には前回の OT で求めた t1, t2 の傾きを使い、この構造で 0.001 以上離れた点ができたら
         その点から傾きを求め直す。予測した点が丸めた桁数で動かなくなったら終了。
-        予測が使えないとき（傾きがない、予測が前回の ω ± search_range の外、予測した点で J が
+        予測が使えないとき（傾きがない、予測が前回の ω ± search_range の外、予測した点で J² が
         下がらない）は、挟み込みと放物線補間に切り替える。
 
         Returns: (ω, J, info)  info: j_center（新しい構造・前回の ω の J）、d_omega_pred（最初の予測）、
@@ -496,7 +496,7 @@ class IterativeOptimizer:
             if j_new > pts[w]:
                 if abs(new - w) <= 2 * res + 1e-12:
                     break   # 丸めの桁の範囲での揺らぎ → 収束
-                reason = f"予測した ω = {new:.{d}f} で J が下がらなかったため"
+                reason = f"予測した ω = {new:.{d}f} で J² が下がらなかったため"
                 break
             # この構造で計算した点から傾きを求め直す（点の間隔が 0.001 以上のときだけ）
             T = self._t_values(optimizer)
@@ -524,7 +524,7 @@ class IterativeOptimizer:
         """予測が使えないとき: center の両側を計算して最小値を挟み込み、放物線補間で絞り込む
 
         両側の幅は 0.01、挟めなければ ±search_range、それでも挟めなければ全範囲の通常のOT。
-        J(ω) は最小値の近くでほぼ放物線なので、3点を通る放物線の頂点を次の点にする。最小値の
+        J²(ω) は最小値の近くでほぼ放物線なので、3点を通る放物線の頂点を次の点にする。最小値の
         両隣の片方だけが遠い（3倍以上）ときは、先に反対側にも近い側と同じ間隔の点を置く。
         Returns: (ω, J, method)  method: 'bracket' / 'full'
         """
@@ -539,8 +539,8 @@ class IterativeOptimizer:
             if not (a < center < c):
                 continue
             fa, fc = f(a), f(c)
-            print(f"  探索の中心 ω={center:.{d}f} (J={pts[center]:.6f})、幅 ±{width:.{d}f}: "
-                  f"J({a:.{d}f})={fa:.6f}, J({c:.{d}f})={fc:.6f}")
+            print(f"  探索の中心 ω={center:.{d}f} (J²={pts[center]:.6f})、幅 ±{width:.{d}f}: "
+                  f"J²({a:.{d}f})={fa:.6f}, J²({c:.{d}f})={fc:.6f}")
             if pts[center] < fa and pts[center] < fc:
                 bracketed = True
                 break
@@ -664,7 +664,7 @@ class IterativeOptimizer:
             s = self._slopes(self._t_values(optimizer), omega)
             if s:
                 slopes = s
-            print(f"  ✓ ω_{n} = {omega:.{d}f}, J = {j:.6f}")
+            print(f"  ✓ ω_{n} = {omega:.{d}f}, J² = {j:.6f}")
 
             if omega_prev is not None:
                 d_omega = omega - omega_prev
@@ -757,16 +757,16 @@ class IterativeOptimizer:
             f"Final geometry: {final_geom['source']}",
             f"Final input: {final_gjf}",
             "",
-            f"{'Iter':<5}{'omega':<9}{'J(OT)':<11}{'Points':<7}{'dOmega':<10}{'Pred':<10}"
-            f"{'J(new geom)':<13}{'RMSD/A':<9}{'MaxDisp/A':<11}{'E(opt)/Hartree':<18}{'Steps':<6}",
-            "-" * 109,
+            f"{'Iter':<5}{'omega':<9}{'J^2(OT)':<11}{'Points':<7}{'dOmega':<10}{'Pred':<10}"
+            f"{'J^2(new geom)':<15}{'RMSD/A':<9}{'MaxDisp/A':<11}{'E(opt)/Hartree':<18}{'Steps':<6}",
+            "-" * 111,
         ]
         fmt = lambda v, s: (s.format(v) if v is not None else '-')
         for r in self.history:
             lines.append(
                 f"{r['iteration']:<5}{r['omega']:<9.{d}f}{r['j']:<11.6f}{fmt(r.get('n_points'), '{:d}'):<7}"
                 f"{fmt(r.get('d_omega'), '{:+.5f}'):<10}{fmt(r.get('d_omega_pred'), '{:+.5f}'):<10}"
-                f"{fmt(r.get('j_after_opt'), '{:.6f}'):<13}"
+                f"{fmt(r.get('j_after_opt'), '{:.6f}'):<15}"
                 f"{fmt(r.get('rmsd'), '{:.4f}'):<9}{fmt(r.get('max_displacement'), '{:.4f}'):<11}"
                 f"{fmt(r.get('energy'), '{:.8f}'):<18}{fmt(r.get('opt_steps'), '{:d}'):<6}")
         lines += [
@@ -775,7 +775,7 @@ class IterativeOptimizer:
             "              iteration n: the geometry optimized in iteration n-1)",
             "Points      : single-point sets (q0/q1/qm1) used in that OT",
             "dOmega      : omega(n) - omega(n-1)   /   Pred: dOmega predicted from the first point of the OT",
-            "J(new geom) : J at omega(n) on the geometry optimized at omega(n)",
+            "J^2(new geom): J^2 at omega(n) on the geometry optimized at omega(n)",
             "RMSD/MaxDisp: change of the geometry in the optimization of that iteration",
         ]
         if self.warnings:
